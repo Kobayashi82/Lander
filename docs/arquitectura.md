@@ -74,7 +74,9 @@ trampas.
   cascada: posición → velocidad deseada (con perfiles de frenado) → aceleración → inclinación y motor,
   exactamente lo que haría un piloto en modo clásico. La aproximación final es la de un piloto prudente:
   centrarse, estabilizarse en vuelo estacionario y bajar a velocidad de aterrizaje perfecto.
-- **Missions** y **Progression**: misiones, puntuación, niveles, desbloqueos y mejoras.
+- **Missions** y **Progression**: misiones, puntuación, niveles, desbloqueos y mejoras. Un aterrizaje
+  solo puntúa tras un vuelo de verdad (al menos 1,5 s y, si vuelve a la misma plataforma, habiendo
+  subido), para que no se puedan granjear puntos tocando y despegando.
 - **Settings**: modelo de ajustes y almacenamiento JSON con escritura atómica (archivo temporal y
   reemplazo) y serialización generada en compilación.
 
