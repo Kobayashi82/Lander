@@ -1,0 +1,25 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <TreatWarningsAsErrors Condition="'$(ContinuousIntegrationBuild)' == 'true'">true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+    <Product>Lander</Product>
+    <Authors>Kobayashi82</Authors>
+    <Company>Kobayashi82</Company>
+    <Copyright>© 2026 Kobayashi82</Copyright>
+    <Description>Una mascota de escritorio para Windows 11: un pequeño módulo lunar que aterriza sobre tus ventanas.</Description>
+    <RepositoryUrl>https://github.com/Kobayashi82/Lander</RepositoryUrl>
+    <NeutralLanguage>es</NeutralLanguage>
+    <SatelliteResourceLanguages>es</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+</Project>

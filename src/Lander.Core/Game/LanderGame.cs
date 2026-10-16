@@ -1,0 +1,711 @@
+using System.Globalization;
+using Lander.Core.Autopilot;
+using Lander.Core.Geometry;
+using Lander.Core.Missions;
+using Lander.Core.Physics;
+using Lander.Core.Progression;
+using Lander.Core.Terrain;
+
+namespace Lander.Core.Game;
+
+/// <summary>
+/// La simulación completa del lander: física, piloto automático, control manual, puntuación y misiones.
+/// No depende de Windows; el anfitrión le da el mundo y los sensores y dibuja el resultado.
+/// </summary>
+public sealed class LanderGame
+{
+    /// <summary>Paso fijo de la física: 60 actualizaciones por segundo.</summary>
+    public const double TimeStep = 1.0 / 60;
+
+    public const double RespawnDelay = 1.8;
+
+    private readonly IRandom _random;
+    private readonly PhysicsEngine _physics;
+    private readonly PhysicsConfig _baseConfig;
+    private readonly List<PhysicsEvent> _physicsEvents = [];
+    private readonly AutopilotContext _context = new();
+    private readonly List<GameEvent> _events = [];
+
+    private ManualControls _previousControls;
+    private double _lastManualInput;
+    private bool _manualLegsDown = true;
+    private double _manualRetractAt = -1;
+    private Vec2 _dragOffset;
+    private Vec2? _dragTarget;
+    private Vec2 _gust;
+    private double _gustTime;
+    private double _gustDuration;
+    private double _slipCooldown;
+    private int _handledEvents;
+    private bool _initialized;
+
+    public LanderGame(GameOptions options, PilotProgress progress, IRandom random, PhysicsConfig? physics = null)
+    {
+        _random = random;
+        _baseConfig = physics ?? new PhysicsConfig();
+        Options = options;
+        Progress = progress;
+        Autopilot = new Autopilot.Autopilot(random);
+        Missions = new MissionSystem(random);
+        _physics = new PhysicsEngine(Unlocks.ApplyUpgrades(_baseConfig, progress.Level));
+        Body.FuelCapacity = _physics.Config.FuelCapacity;
+        Body.Fuel = Body.FuelCapacity;
+        ApplyOptions(options);
+
+        _context.Body = Body;
+        _context.Visual = Visual;
+    }
+
+    public GameOptions Options { get; private set; }
+
+    public PilotProgress Progress { get; }
+
+    /// <summary>Se incrementa cada vez que cambia el progreso, para guardarlo cuando haga falta.</summary>
+    public int ProgressVersion { get; private set; }
+
+    public LanderBody Body { get; } = new();
+
+    public Autopilot.Autopilot Autopilot { get; }
+
+    public MissionSystem Missions { get; }
+
+    public LanderVisual Visual { get; } = new();
+
+    public ControlMode Mode { get; private set; } = ControlMode.Auto;
+
+    public bool IsPaused { get; private set; }
+
+    public double Time { get; private set; }
+
+    public World World { get; private set; } = World.Empty;
+
+    public Sensors Sensors { get; private set; } = new();
+
+    public PhysicsConfig Physics => _physics.Config;
+
+    public ThrustInput LastInput { get; private set; }
+
+    public bool IsInitialized => _initialized;
+
+    public bool IsHeld => Body.State == BodyState.Held;
+
+    /// <summary>
+    /// Si el anfitrión debe seguir actualizando a 60 Hz. Cuando es falso, el lander está quieto y basta
+    /// con despertar de vez en cuando.
+    /// </summary>
+    public bool NeedsHighFrequency =>
+        Body.State != BodyState.Landed
+        || Mode == ControlMode.Manual
+        || Autopilot.IsFlightActive
+        || Visual.IsAnimating
+        || Math.Abs(Body.Angle) > 0.002
+        || Math.Abs(Body.AngularVelocity) > 0.01
+        || Body.Support is { } support && support.Velocity.LengthSquared > 1;
+
+    public void ApplyOptions(GameOptions options)
+    {
+        Options = options;
+        Autopilot.Personality.Shyness = Math.Clamp(options.Shyness, 0, 1);
+        Missions.Frequency = options.MissionFrequency;
+    }
+
+    /// <summary>Coloca el lander en la base del monitor principal.</summary>
+    public void Initialize(World world)
+    {
+        World = world;
+        _initialized = true;
+        UpdateScale();
+        PlaceAtBase();
+        Visual.Opacity = 0;
+        PrepareContext(Sensors, TimeStep);
+        Autopilot.Resume(_context);
+    }
+
+    /// <summary>Avanza la simulación un paso fijo de <see cref="TimeStep"/>.</summary>
+    public void Step(World world, Sensors sensors, ManualControls controls)
+    {
+        const double dt = TimeStep;
+        World = world;
+        Sensors = sensors;
+        if (world.IsEmpty)
+        {
+            return;
+        }
+
+        if (!_initialized)
+        {
+            Initialize(world);
+        }
+
+        Time += dt;
+        _slipCooldown -= dt;
+        UpdateScale();
+        UpdateWind(dt);
+        PrepareContext(sensors, dt);
+
+        if (Mode == ControlMode.Manual && !controls.Any && Time - _lastManualInput > Options.ManualTimeoutSeconds)
+        {
+            SetMode(ControlMode.Auto, ModeChangeReason.Timeout);
+        }
+
+        ThrustInput input;
+        if (Body.State == BodyState.Held)
+        {
+            input = ThrustInput.None;
+            if (_dragTarget is { } target)
+            {
+                _physics.StepHeld(Body, target, dt);
+            }
+        }
+        else
+        {
+            input = Mode == ControlMode.Manual ? MapManual(controls) : Autopilot.Update(_context);
+            _physics.Step(Body, input, world, dt, _physicsEvents);
+        }
+
+        LastInput = input;
+        ProcessPhysicsEvents();
+        ProcessSignals();
+        UpdateRespawn();
+        UpdateStats(dt);
+
+        Missions.Update(world, Body, Mode, sensors, dt, _events);
+        ProcessMissionEvents();
+
+        Visual.ShowHud = Mode == ControlMode.Manual;
+        Visual.CarryingPackage = Missions.Current is { Status: MissionStatus.Active, Kind: MissionKind.Delivery };
+        Visual.Update(dt, Body, input);
+        _previousControls = controls;
+    }
+
+    /// <summary>Copia los eventos pendientes en <paramref name="into"/> y los vacía.</summary>
+    public void DrainEvents(List<GameEvent> into)
+    {
+        ProcessMissionEvents();
+        into.AddRange(_events);
+        _events.Clear();
+        _handledEvents = 0;
+    }
+
+    public void Notify(SystemEvent systemEvent)
+    {
+        if (!_initialized)
+        {
+            return;
+        }
+
+        PrepareContext(Sensors, TimeStep);
+        switch (systemEvent)
+        {
+            case WindGust gust:
+                _gust = gust.Acceleration * Body.Scale;
+                _gustTime = _gustDuration = Math.Max(0.05, gust.Duration);
+                if (Body.IsLanded)
+                {
+                    Body.AngularVelocity += Math.Sign(gust.Acceleration.X) * 0.6;
+                }
+
+                break;
+
+            case NotificationArrived when Mode == ControlMode.Manual:
+                Visual.Flash(Expression.Scared, 1.2);
+                break;
+
+            case WindowOpened when Mode == ControlMode.Manual:
+                Autopilot.Personality.Curiosity = Math.Min(1, Autopilot.Personality.Curiosity + 0.3);
+                break;
+
+            default:
+                if (Mode == ControlMode.Auto)
+                {
+                    Autopilot.Notify(systemEvent, _context);
+                    ProcessSignals();
+                }
+
+                break;
+        }
+    }
+
+    public void ToggleMode() =>
+        SetMode(Mode == ControlMode.Manual ? ControlMode.Auto : ControlMode.Manual, ModeChangeReason.User);
+
+    public void SetMode(ControlMode mode, ModeChangeReason reason)
+    {
+        if (Mode == mode || !_initialized)
+        {
+            return;
+        }
+
+        if (mode == ControlMode.Manual && IsPaused)
+        {
+            IsPaused = false;
+        }
+
+        Mode = mode;
+        PrepareContext(Sensors, TimeStep);
+        if (mode == ControlMode.Manual)
+        {
+            _lastManualInput = Time;
+            _manualLegsDown = Body.LegsDeploy > 0.5;
+            _manualRetractAt = -1;
+            Visual.ClearBubble();
+            Visual.SetBaseExpression(Expression.Focused);
+            Missions.OnModeChanged(mode, World, Body, _events);
+            ProcessMissionEvents();
+        }
+        else
+        {
+            Visual.SetBaseExpression(Expression.Neutral);
+            Autopilot.Resume(_context);
+        }
+
+        _events.Add(new GameEvent(GameEventKind.ModeChanged, Body.Position) { Mode = mode, Reason = reason });
+    }
+
+    /// <summary>En pausa el lander aterriza donde pueda y se queda quieto.</summary>
+    public void SetPaused(bool paused)
+    {
+        if (IsPaused == paused)
+        {
+            return;
+        }
+
+        IsPaused = paused;
+        if (paused)
+        {
+            SetMode(ControlMode.Auto, ModeChangeReason.Paused);
+            PrepareContext(Sensors, TimeStep);
+            Autopilot.LandNow(_context);
+        }
+    }
+
+    /// <summary>
+    /// Para pantalla completa: si estaba volando, lo deja posado en la plataforma de debajo al instante.
+    /// </summary>
+    public void SnapToSurface()
+    {
+        if (!_initialized)
+        {
+            return;
+        }
+
+        if (Mode == ControlMode.Manual)
+        {
+            SetMode(ControlMode.Auto, ModeChangeReason.Fullscreen);
+        }
+
+        if (Body.State is BodyState.Flying or BodyState.Held or BodyState.Destroyed)
+        {
+            var below = DestinationPicker.PickBelow(World, Body, Body.Position);
+            if (below is not null && below.TryResolve(World, Body, out var center, out var segment))
+            {
+                Body.Velocity = Vec2.Zero;
+                Body.PlaceOn(segment, center.X, World.Timestamp);
+            }
+            else
+            {
+                PlaceAtBase();
+            }
+
+            Visual.Opacity = 1;
+            PrepareContext(Sensors, TimeStep);
+            Autopilot.LandNow(_context);
+        }
+    }
+
+    public void BeginDrag(Vec2 cursor)
+    {
+        if (!_initialized || Body.State == BodyState.Destroyed)
+        {
+            return;
+        }
+
+        Body.Hold();
+        _dragOffset = Body.Position - cursor;
+        _dragTarget = Body.Position;
+        Visual.Flash(Expression.Scared, 0.8);
+    }
+
+    public void Drag(Vec2 cursor)
+    {
+        if (Body.State == BodyState.Held)
+        {
+            _dragTarget = cursor + _dragOffset;
+        }
+    }
+
+    public void EndDrag()
+    {
+        _dragTarget = null;
+        PhysicsEngine.Release(Body);
+    }
+
+    /// <summary>Ofrece una misión ahora mismo (para el menú de la bandeja).</summary>
+    public bool OfferMission(MissionKind? kind = null)
+    {
+        if (!_initialized)
+        {
+            return false;
+        }
+
+        var offered = Missions.OfferNow(World, Body, Mode, _events, kind);
+        ProcessMissionEvents();
+        return offered;
+    }
+
+    private ThrustInput MapManual(ManualControls controls)
+    {
+        if (controls.Any)
+        {
+            _lastManualInput = Time;
+        }
+
+        var downPressed = controls.Down && !_previousControls.Down;
+        var boostPressed = controls.Boost && !_previousControls.Boost;
+
+        if (downPressed)
+        {
+            _manualLegsDown = true;
+            _manualRetractAt = -1;
+        }
+
+        if (_manualRetractAt > 0 && Time >= _manualRetractAt && !controls.Down && Body.IsFlying)
+        {
+            _manualLegsDown = false;
+            _manualRetractAt = -1;
+        }
+
+        var classic = Options.PilotMode == PilotMode.Classic;
+
+        // En modo asistido las patas salen solas al acercarse a una plataforma.
+        if (!classic && !_manualLegsDown && Body.IsFlying
+            && World.PlatformBelow(Body.Position.X, Body.FeetY) is { } below && below.Y - Body.FeetY < Body.Height * 3)
+        {
+            _manualLegsDown = true;
+        }
+
+        var horizontal = (controls.Right ? 1 : 0) - (controls.Left ? 1 : 0);
+        return new ThrustInput(
+            Throttle: controls.Up ? 1 : 0,
+            Rotate: classic ? horizontal : 0,
+            Lateral: classic ? 0 : horizontal,
+            Stabilize: !classic || controls.Down,
+            Boost: boostPressed,
+            RetractLegs: !_manualLegsDown);
+    }
+
+    private void ProcessPhysicsEvents()
+    {
+        foreach (var physicsEvent in _physicsEvents)
+        {
+            var manual = Mode == ControlMode.Manual;
+            switch (physicsEvent.Kind)
+            {
+                case PhysicsEventKind.TookOff:
+                    if (manual)
+                    {
+                        _manualRetractAt = Time + 1;
+                    }
+
+                    Missions.OnTakeoff(physicsEvent.Platform, Body);
+                    Emit(GameEventKind.TookOff, physicsEvent);
+                    break;
+
+                case PhysicsEventKind.Touchdown:
+                    HandleTouchdown(physicsEvent, manual);
+                    break;
+
+                case PhysicsEventKind.Crashed:
+                    Progress.Crashes++;
+                    Progress.CurrentStreak = 0;
+                    ProgressVersion++;
+                    Missions.OnCrash(Body, _events);
+                    Emit(GameEventKind.Crashed, physicsEvent, manual);
+                    ProcessMissionEvents();
+                    break;
+
+                case PhysicsEventKind.SupportLost:
+                    if (manual)
+                    {
+                        Visual.Flash(Expression.Scared, 1.2);
+                    }
+
+                    Emit(GameEventKind.SupportLost, physicsEvent);
+                    break;
+
+                case PhysicsEventKind.Launched:
+                case PhysicsEventKind.Toppled:
+                    Visual.Flash(Expression.Scared, 1.5);
+                    Emit(physicsEvent.Kind == PhysicsEventKind.Launched ? GameEventKind.Launched : GameEventKind.Toppled, physicsEvent);
+                    break;
+
+                case PhysicsEventKind.Slipped:
+                    if (_slipCooldown <= 0)
+                    {
+                        _slipCooldown = 0.4;
+                        Emit(GameEventKind.Slipped, physicsEvent);
+                    }
+
+                    break;
+
+                case PhysicsEventKind.HitCeiling:
+                case PhysicsEventKind.HitWall:
+                    if (physicsEvent.Magnitude > 30 * Body.Scale)
+                    {
+                        Emit(physicsEvent.Kind == PhysicsEventKind.HitCeiling ? GameEventKind.HitCeiling : GameEventKind.HitWall, physicsEvent);
+                    }
+
+                    break;
+
+                case PhysicsEventKind.Boosted:
+                    Visual.BoostFlash = 0.35;
+                    Emit(GameEventKind.Boosted, physicsEvent);
+                    break;
+
+                case PhysicsEventKind.LegsDeployed:
+                    Emit(GameEventKind.LegsDeployed, physicsEvent);
+                    break;
+
+                case PhysicsEventKind.LegsRetracted:
+                    Emit(GameEventKind.LegsRetracted, physicsEvent);
+                    break;
+
+                case PhysicsEventKind.FuelEmpty:
+                    Emit(GameEventKind.FuelEmpty, physicsEvent);
+                    break;
+            }
+        }
+
+        _physicsEvents.Clear();
+    }
+
+    private void HandleTouchdown(PhysicsEvent physicsEvent, bool manual)
+    {
+        var landing = physicsEvent.Landing!;
+        var platform = physicsEvent.Platform!;
+        var points = 0;
+
+        if (manual)
+        {
+            if (landing.Quality == LandingQuality.Perfect)
+            {
+                Progress.CurrentStreak++;
+                Progress.BestStreak = Math.Max(Progress.BestStreak, Progress.CurrentStreak);
+                Progress.PerfectLandings++;
+                Visual.Flash(Expression.Happy, 2);
+                Visual.CelebrateTime = 1.2;
+            }
+            else
+            {
+                Progress.CurrentStreak = 0;
+                Progress.HardLandings++;
+                Visual.Flash(Expression.Scared, 1.2);
+            }
+
+            points = Scoring.Points(landing.Quality, platform, Body.HalfWidth * 2, Progress.CurrentStreak);
+            var popupAt = Body.Position - new Vec2(0, Body.Height * 1.1);
+            Visual.AddPopup(
+                "+" + points.ToString(CultureInfo.InvariantCulture),
+                popupAt,
+                landing.Quality == LandingQuality.Perfect ? PopupStyle.Perfect : PopupStyle.Points);
+            if (landing.Quality == LandingQuality.Perfect && Progress.CurrentStreak > 1)
+            {
+                var multiplier = Scoring.StreakMultiplier(Progress.CurrentStreak);
+                Visual.AddPopup("×" + multiplier.ToString("0.#", CultureInfo.CurrentCulture), popupAt + new Vec2(0, Body.Height * 0.55), PopupStyle.Bonus);
+            }
+
+            AddPoints(points);
+        }
+        else
+        {
+            Progress.AutoLandings++;
+            ProgressVersion++;
+            Autopilot.OnTouchdown(landing, _context);
+        }
+
+        _events.Add(new GameEvent(GameEventKind.Touchdown, Body.Position)
+        {
+            Landing = landing,
+            Platform = platform,
+            Manual = manual,
+            Points = points,
+            Streak = Progress.CurrentStreak,
+            Magnitude = landing.VerticalSpeed,
+        });
+
+        Missions.OnTouchdown(platform, landing.Quality, manual, World, Body, _events);
+        ProcessMissionEvents();
+    }
+
+    /// <summary>Aplica los efectos de los eventos de misión que aún no se han tratado.</summary>
+    private void ProcessMissionEvents()
+    {
+        for (; _handledEvents < _events.Count; _handledEvents++)
+        {
+            var gameEvent = _events[_handledEvents];
+            if (gameEvent.Mission is not { } mission)
+            {
+                continue;
+            }
+
+            switch (gameEvent.Kind)
+            {
+                case GameEventKind.MissionOffered when mission.Status == MissionStatus.Offered:
+                    Visual.ShowBubble(new Bubble(mission.Icon, MissionSystem.OfferDuration, AppHandle: mission.AppHandle));
+                    break;
+
+                case GameEventKind.MissionStarted:
+                    Visual.ShowBubble(new Bubble(mission.Icon, 3, AppHandle: mission.AppHandle));
+                    break;
+
+                case GameEventKind.CrystalCollected:
+                    Progress.CrystalsCollected++;
+                    Visual.AddPopup("+" + gameEvent.Points.ToString(CultureInfo.InvariantCulture), gameEvent.Position, PopupStyle.Bonus);
+                    AddPoints(gameEvent.Points);
+                    break;
+
+                case GameEventKind.MissionCompleted:
+                    Progress.MissionsCompleted++;
+                    Visual.ShowBubble(new Bubble(BubbleIcon.Trophy, 2.5));
+                    Visual.CelebrateTime = 2;
+                    Visual.Flash(Expression.Happy, 2.5);
+                    Visual.AddPopup("+" + gameEvent.Points.ToString(CultureInfo.InvariantCulture), Body.Position - new Vec2(0, Body.Height * 1.6), PopupStyle.Bonus);
+                    AddPoints(gameEvent.Points);
+                    break;
+
+                case GameEventKind.MissionExpired:
+                    if (Visual.Bubble is { } bubble && bubble.Icon == mission.Icon)
+                    {
+                        Visual.ClearBubble();
+                    }
+
+                    break;
+            }
+        }
+    }
+
+    private void ProcessSignals()
+    {
+        foreach (var signal in _context.Signals)
+        {
+            _events.Add(new GameEvent(signal, Body.Position));
+        }
+
+        _context.Signals.Clear();
+    }
+
+    private void AddPoints(int points)
+    {
+        if (points <= 0)
+        {
+            return;
+        }
+
+        var before = Progress.Level;
+        Progress.TotalPoints += points;
+        ProgressVersion++;
+        var after = Progress.Level;
+        if (after > before)
+        {
+            var config = Unlocks.ApplyUpgrades(_baseConfig, after);
+            var fuelFraction = Body.FuelFraction;
+            _physics.Config = config;
+            Body.FuelCapacity = config.FuelCapacity;
+            Body.Fuel = fuelFraction * config.FuelCapacity;
+            Visual.CelebrateTime = 2;
+            Visual.ShowBubble(new Bubble(BubbleIcon.Trophy, 2.5));
+            _events.Add(new GameEvent(GameEventKind.LevelUp, Body.Position)
+            {
+                Level = after,
+                Unlocks = Unlocks.Between(before, after),
+            });
+        }
+    }
+
+    private void UpdateRespawn()
+    {
+        if (Body.State != BodyState.Destroyed || Body.StateTime < RespawnDelay)
+        {
+            return;
+        }
+
+        PlaceAtBase();
+        Body.Fuel = Body.FuelCapacity;
+        Visual.Opacity = 0;
+        Visual.Flash(Expression.Tired, 2);
+        _events.Add(new GameEvent(GameEventKind.Respawned, Body.Position));
+        if (Mode == ControlMode.Auto)
+        {
+            Autopilot.Resume(_context);
+        }
+    }
+
+    private void PlaceAtBase()
+    {
+        var ground = World.PrimaryGround ?? (World.Platforms.Count > 0 ? World.Platforms[0] : null);
+        if (ground is null)
+        {
+            return;
+        }
+
+        // En la barra de tareas, un poco a la derecha del centro para no tapar el botón de inicio.
+        var margin = DestinationPicker.LandingMargin(Body);
+        var x = Math.Clamp(ground.CenterX + ground.Width * 0.18, ground.Left + margin, ground.Right - margin);
+        Body.Velocity = Vec2.Zero;
+        Body.AngularVelocity = 0;
+        Body.PlaceOn(ground, x, World.Timestamp);
+    }
+
+    private void UpdateScale()
+    {
+        var monitor = World.MonitorAt(Body.Position) ?? World.NearestMonitor(Body.Position);
+        var dpi = monitor?.DpiScale ?? 1;
+        Body.Scale = Math.Clamp(Options.LanderSizeDip, 16, 256) / LanderBody.BaseHeight * dpi;
+    }
+
+    private void UpdateWind(double dt)
+    {
+        if (_gustTime > 0)
+        {
+            _gustTime -= dt;
+            var envelope = Math.Sin(Math.Clamp(1 - _gustTime / _gustDuration, 0, 1) * Math.PI);
+            Body.ExternalAcceleration = _gust * envelope;
+        }
+        else
+        {
+            Body.ExternalAcceleration = Vec2.Zero;
+        }
+    }
+
+    private void UpdateStats(double dt)
+    {
+        if (Body.IsFlying)
+        {
+            Progress.FlightSeconds += dt;
+            if (Mode == ControlMode.Manual)
+            {
+                Progress.ManualFlightSeconds += dt;
+            }
+        }
+    }
+
+    private void PrepareContext(Sensors sensors, double dt)
+    {
+        _context.World = World;
+        _context.Physics = _physics.Config;
+        _context.Sensors = sensors;
+        _context.Time = Time;
+        _context.Dt = dt;
+        _context.Activity = Options.Activity;
+        _context.HoldStill = IsPaused || sensors.QuietMode;
+    }
+
+    private void Emit(GameEventKind kind, in PhysicsEvent physicsEvent, bool manual = false) =>
+        _events.Add(new GameEvent(kind, Body.Position)
+        {
+            Magnitude = physicsEvent.Magnitude,
+            Platform = physicsEvent.Platform,
+            Landing = physicsEvent.Landing,
+            Manual = manual,
+        });
+}

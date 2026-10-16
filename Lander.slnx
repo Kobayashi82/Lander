@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Lander.App/Lander.App.csproj" />
+    <Project Path="src/Lander.Core/Lander.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Lander.Core.Tests/Lander.Core.Tests.csproj" />
+  </Folder>
+</Solution>
