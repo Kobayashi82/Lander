@@ -69,6 +69,8 @@ public sealed class ScorePopup(string text, Vec2 position, PopupStyle style)
 /// </summary>
 public sealed class LanderVisual
 {
+    private const int MaxPopups = 6;
+
     private double _expressionTimer;
     private Expression _baseExpression = Expression.Neutral;
 
@@ -137,7 +139,15 @@ public sealed class LanderVisual
         _expressionTimer = seconds;
     }
 
-    public void AddPopup(string text, Vec2 position, PopupStyle style) => Popups.Add(new ScorePopup(text, position, style));
+    public void AddPopup(string text, Vec2 position, PopupStyle style)
+    {
+        if (Popups.Count >= MaxPopups)
+        {
+            Popups.RemoveAt(0);
+        }
+
+        Popups.Add(new ScorePopup(text, position, style));
+    }
 
     public void Update(double dt, LanderBody body, in ThrustInput input)
     {

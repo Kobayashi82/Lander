@@ -53,6 +53,23 @@ public class LanderGameTests
     }
 
     [Fact]
+    public void Touch_and_go_hops_do_not_score()
+    {
+        var world = Desktop();
+        var game = NewGame(world);
+        game.SetMode(ControlMode.Manual, ModeChangeReason.User);
+
+        // Pulsaciones cortísimas del motor: el lander apenas despega y vuelve a posarse una y otra vez.
+        var events = Sim.RunGame(game, world, new Sensors(), 6,
+            controls: g => new ManualControls(g.Time % 0.5 < 0.05, false, false, false, false));
+
+        Assert.Contains(events, e => e.Kind == GameEventKind.Touchdown);
+        Assert.Equal(0, game.Progress.TotalPoints);
+        Assert.Equal(0, game.Progress.CurrentStreak);
+        Assert.Empty(game.Visual.Popups);
+    }
+
+    [Fact]
     public void Manual_control_times_out_back_to_auto()
     {
         var world = Desktop();

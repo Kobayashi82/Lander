@@ -141,6 +141,9 @@ internal sealed unsafe class EngineHost : IDisposable
     /// </summary>
     public bool DemoMode { get; init; }
 
+    /// <summary>Piloto simulado para el modo manual (<c>--demo-manual</c>).</summary>
+    public DemoPilot? DemoPilot { get; init; }
+
     /// <summary>Progreso final, disponible tras <see cref="Stop"/>.</summary>
     public PilotProgress? FinalProgress { get; private set; }
 
@@ -445,7 +448,13 @@ internal sealed unsafe class EngineHost : IDisposable
         }
 
         _accumulator += elapsed;
-        var controls = _game.Mode == ControlMode.Manual ? HotkeyManager.ReadControls() : default;
+        if (DemoPilot is not null && _game.Mode == ControlMode.Auto && !_game.IsPaused && _game.Time > 3)
+        {
+            _game.SetMode(ControlMode.Manual, ModeChangeReason.User);
+        }
+
+        var manual = _game.Mode == ControlMode.Manual;
+        var controls = !manual ? default : DemoPilot?.Next(_game, _world) ?? HotkeyManager.ReadControls();
         var steps = 0;
         while (_accumulator >= LanderGame.TimeStep && steps < MaxStepsPerTick)
         {
@@ -736,7 +745,7 @@ internal sealed unsafe class EngineHost : IDisposable
                 break;
 
             case GameEventKind.ModeChanged:
-                _hotkeys.SetGameKeys(gameEvent.Mode == ControlMode.Manual && !_hidden);
+                _hotkeys.SetGameKeys(gameEvent.Mode == ControlMode.Manual && !_hidden && DemoPilot is null);
                 Play(Sound.Pop, 0.7);
                 PublishStatus();
                 break;
@@ -1160,6 +1169,7 @@ internal sealed unsafe class EngineHost : IDisposable
         _scene.Skin = _skin;
         _scene.Dark = _sensors.DarkMode;
         _scene.Time = animationTime;
+        _scene.TopLimit = (_world.MonitorAt(position) ?? _world.NearestMonitor(position))?.Bounds.Top ?? double.MinValue;
         _scene.Pose = new LanderPose
         {
             LegsDeploy = body.LegsDeploy,

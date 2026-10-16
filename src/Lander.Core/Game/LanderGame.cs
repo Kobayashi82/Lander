@@ -19,6 +19,9 @@ public sealed class LanderGame
 
     public const double RespawnDelay = 1.8;
 
+    /// <summary>Duración mínima de un vuelo para que su aterrizaje puntúe (evita «tocar y despegar»).</summary>
+    public const double MinScoringFlight = 1.5;
+
     private readonly IRandom _random;
     private readonly PhysicsEngine _physics;
     private readonly PhysicsConfig _baseConfig;
@@ -37,6 +40,10 @@ public sealed class LanderGame
     private double _gustDuration;
     private double _slipCooldown;
     private int _handledEvents;
+    private double _flightStart;
+    private long _flightOrigin;
+    private double _flightOriginFeetY;
+    private double _flightClimb;
     private bool _initialized;
 
     public LanderGame(GameOptions options, PilotProgress progress, IRandom random, PhysicsConfig? physics = null)
@@ -148,6 +155,8 @@ public sealed class LanderGame
             SetMode(ControlMode.Auto, ModeChangeReason.Timeout);
         }
 
+        var stateBefore = Body.State;
+        var supportBefore = Body.Support?.OwnerId ?? 0;
         ThrustInput input;
         if (Body.State == BodyState.Held)
         {
@@ -164,6 +173,7 @@ public sealed class LanderGame
         }
 
         LastInput = input;
+        TrackFlight(stateBefore, supportBefore);
         ProcessPhysicsEvents();
         ProcessSignals();
         UpdateRespawn();
@@ -367,6 +377,7 @@ public sealed class LanderGame
     {
         _dragTarget = null;
         PhysicsEngine.Release(Body);
+        StartFlight(0);
     }
 
     /// <summary>Ofrece una misión ahora mismo (para el menú de la bandeja).</summary>
@@ -514,7 +525,11 @@ public sealed class LanderGame
         var platform = physicsEvent.Platform!;
         var points = 0;
 
-        if (manual)
+        // Solo puntúa un vuelo de verdad: ni un salto de una décima ni subir un palmo y volver al mismo sitio.
+        var scores = Time - _flightStart >= MinScoringFlight
+            && (platform.OwnerId != _flightOrigin || _flightClimb >= Body.Height * 1.5);
+
+        if (manual && scores)
         {
             if (landing.Quality == LandingQuality.Perfect)
             {
@@ -532,7 +547,7 @@ public sealed class LanderGame
             }
 
             points = Scoring.Points(landing.Quality, platform, Body.HalfWidth * 2, Progress.CurrentStreak);
-            var popupAt = Body.Position - new Vec2(0, Body.Height * 1.1);
+            var popupAt = PopupAnchor(1.1);
             Visual.AddPopup(
                 "+" + points.ToString(CultureInfo.InvariantCulture),
                 popupAt,
@@ -545,7 +560,7 @@ public sealed class LanderGame
 
             AddPoints(points);
         }
-        else
+        else if (!manual)
         {
             Progress.AutoLandings++;
             ProgressVersion++;
@@ -598,7 +613,7 @@ public sealed class LanderGame
                     Visual.ShowBubble(new Bubble(BubbleIcon.Trophy, 2.5));
                     Visual.CelebrateTime = 2;
                     Visual.Flash(Expression.Happy, 2.5);
-                    Visual.AddPopup("+" + gameEvent.Points.ToString(CultureInfo.InvariantCulture), Body.Position - new Vec2(0, Body.Height * 1.6), PopupStyle.Bonus);
+                    Visual.AddPopup("+" + gameEvent.Points.ToString(CultureInfo.InvariantCulture), PopupAnchor(1.6), PopupStyle.Bonus);
                     AddPoints(gameEvent.Points);
                     break;
 
@@ -611,6 +626,19 @@ public sealed class LanderGame
                     break;
             }
         }
+    }
+
+    /// <summary>
+    /// Dónde mostrar unos puntos: encima del lander o, si no caben bajo el borde superior del monitor, a su
+    /// lado.
+    /// </summary>
+    private Vec2 PopupAnchor(double heightsAbove)
+    {
+        var preferred = Body.Position - new Vec2(0, Body.Height * heightsAbove);
+        var monitor = World.MonitorAt(Body.Position) ?? World.NearestMonitor(Body.Position);
+        return monitor is not null && preferred.Y - Body.Height * 0.9 < monitor.Bounds.Top
+            ? Body.Position + new Vec2(Body.Height * 1.5, -Body.Height * 0.1)
+            : preferred;
     }
 
     private void ProcessSignals()
@@ -726,6 +754,27 @@ public sealed class LanderGame
         {
             Body.ExternalAcceleration = Vec2.Zero;
         }
+    }
+
+    private void TrackFlight(BodyState stateBefore, long supportBefore)
+    {
+        if (Body.IsFlying)
+        {
+            if (stateBefore != BodyState.Flying)
+            {
+                StartFlight(supportBefore);
+            }
+
+            _flightClimb = Math.Max(_flightClimb, _flightOriginFeetY - Body.FeetY);
+        }
+    }
+
+    private void StartFlight(long origin)
+    {
+        _flightStart = Time;
+        _flightOrigin = origin;
+        _flightOriginFeetY = Body.FeetY;
+        _flightClimb = 0;
     }
 
     private void UpdateStats(double dt)

@@ -45,6 +45,9 @@ internal sealed class LanderScene
     public bool Dark { get; set; }
 
     public double Time { get; set; }
+
+    /// <summary>Borde superior del monitor donde está el lander.</summary>
+    public double TopLimit { get; set; } = double.MinValue;
 }
 
 internal static class SceneRenderer
@@ -76,7 +79,7 @@ internal static class SceneRenderer
         if (scene.Visible && scene.Bubble is { } bubble)
         {
             var top = new Point(center.X, center.Y - 24 * scene.Scale);
-            BubbleRenderer.Draw(dc, bubble, scene.BubbleAge, top, scene.Scale, scene.Dark, scene.BubbleIcon, scene.Time);
+            BubbleRenderer.Draw(dc, bubble, scene.BubbleAge, top, scene.Scale, scene.Dark, scene.BubbleIcon, scene.Time, scene.TopLimit);
         }
 
         foreach (var popup in scene.Popups)

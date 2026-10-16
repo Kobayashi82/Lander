@@ -15,7 +15,8 @@ internal static class BubbleRenderer
     private static readonly Geometry Shadow = Shifted(0, 1.3);
 
     /// <param name="anchor">Punta superior del lander, en el mundo.</param>
-    public static void Draw(DrawingContext dc, Bubble bubble, double age, Point anchor, double scale, bool dark, ImageSource? appIcon, double time)
+    /// <param name="topLimit">Borde superior del monitor: si no cabe encima, el bocadillo se aparta a un lado.</param>
+    public static void Draw(DrawingContext dc, Bubble bubble, double age, Point anchor, double scale, bool dark, ImageSource? appIcon, double time, double topLimit = double.MinValue)
     {
         var appear = EaseOutBack(Math.Clamp(age / 0.22, 0, 1));
         var vanish = Math.Clamp((bubble.Duration - age) / 0.3, 0, 1);
@@ -28,6 +29,11 @@ internal static class BubbleRenderer
         var size = scale * (0.55 + 0.45 * appear);
         var bob = Math.Sin(time * 2.2) * 0.6;
         var center = new Point(anchor.X, anchor.Y - (Height / 2 + 7 + bob) * scale);
+        if (center.Y - (Height / 2 + 2) * scale < topLimit)
+        {
+            center = new Point(anchor.X + 30 * scale, topLimit + (Height / 2 + 3) * scale);
+        }
+
 
         dc.PushTransform(new MatrixTransform(size, 0, 0, size, center.X, center.Y));
         dc.PushOpacity(alpha);

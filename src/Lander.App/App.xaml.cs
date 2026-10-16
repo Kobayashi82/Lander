@@ -106,9 +106,17 @@ public partial class App : Application
         _status = _status with { Paused = _settings.Current.Paused, Level = _settings.Progress.Level };
         UpdateTrayIcon();
 
-        _engine = new EngineHost(_settings.Current.Clone(), _settings.Progress.Clone(), Dispatcher) { DemoMode = e.Args.Contains("--demo") };
+        _engine = new EngineHost(_settings.Current.Clone(), _settings.Progress.Clone(), Dispatcher) {
+            DemoMode = e.Args.Contains("--demo") || e.Args.Contains("--demo-manual"),
+            DemoPilot = e.Args.Contains("--demo-manual") ? new DemoPilot() : null,
+        };
         _engine.StatusChanged += OnEngineStatus;
-        _engine.ProgressChanged += progress => _settings.SetProgress(progress);
+        if (!_engine.DemoMode)
+        {
+            // En modo demostración no se guarda nada del progreso.
+            _engine.ProgressChanged += progress => _settings.SetProgress(progress);
+        }
+
         _engine.ContextMenuRequested += ShowMenu;
         _engine.Notification += (title, message) => _tray?.ShowBalloon(title, message);
         _settings.Changed += OnSettingsChanged;
@@ -125,7 +133,7 @@ public partial class App : Application
         if (_engine is not null)
         {
             _engine.Stop();
-            if (_engine.FinalProgress is { } progress)
+            if (!_engine.DemoMode && _engine.FinalProgress is { } progress)
             {
                 _settings?.SetProgress(progress);
             }
