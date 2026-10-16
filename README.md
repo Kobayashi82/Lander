@@ -117,7 +117,8 @@ GitHub Actions compila, prueba y publica una versión con ambos ejecutables.
 | --- | --- |
 | `--settings` | Abre los ajustes al arrancar. |
 | `--exit` | Cierra limpiamente la instancia en marcha. |
-| `--demo` | Modo demostración: simula a alguien delante del PC y vuela mucho más a menudo. |
+| `--demo` | Modo demostración: simula a alguien delante del PC y vuela mucho más a menudo. No guarda el progreso. |
+| `--demo-manual` | Como `--demo`, pero pilotando en modo manual con un piloto simulado (sin capturar el teclado). |
 | `--preview archivo.png` | Dibuja todos los aspectos, expresiones, bocadillos y el HUD en una imagen. |
 | `--preview-hero archivo.png` | Genera la imagen de portada de este README. |
 | `--preview-settings carpeta` | Guarda cada página de los ajustes como imagen, sin mostrarlos. |

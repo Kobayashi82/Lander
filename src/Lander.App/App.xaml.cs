@@ -118,6 +118,7 @@ public partial class App : Application
         }
 
         _engine.ContextMenuRequested += ShowMenu;
+        _engine.Resumed += () => _settings.Update(s => s.Paused = false);
         _engine.Notification += (title, message) => _tray?.ShowBalloon(title, message);
         _settings.Changed += OnSettingsChanged;
         _engine.Start();

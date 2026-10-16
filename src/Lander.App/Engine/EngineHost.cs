@@ -132,6 +132,9 @@ internal sealed unsafe class EngineHost : IDisposable
     /// <summary>Clic derecho sobre el lander (en el hilo de la interfaz).</summary>
     public event Action? ContextMenuRequested;
 
+    /// <summary>Tomar el control ha sacado al lander de la pausa (en el hilo de la interfaz).</summary>
+    public event Action? Resumed;
+
     /// <summary>Aviso para mostrar en la bandeja: título y texto (en el hilo de la interfaz).</summary>
     public event Action<string, string>? Notification;
 
@@ -168,7 +171,7 @@ internal sealed unsafe class EngineHost : IDisposable
 
     public void ApplySettings(LanderSettings settings) => Post(() => OnSettingsChanged(settings.Clone()));
 
-    public void ToggleManual() => Post(() => _game.ToggleMode());
+    public void ToggleManual() => Post(ToggleMode);
 
     public void OfferMission() => Post(() =>
     {
@@ -868,8 +871,7 @@ internal sealed unsafe class EngineHost : IDisposable
                 return 0;
 
             case WM_LBUTTONDBLCLK:
-                _game.ToggleMode();
-                DrainGameEvents();
+                ToggleMode();
                 return 0;
 
             case WM_RBUTTONUP:
@@ -910,6 +912,18 @@ internal sealed unsafe class EngineHost : IDisposable
         return null;
     }
 
+    /// <summary>Alterna entre automático y manual; tomar el control saca al lander de la pausa.</summary>
+    private void ToggleMode()
+    {
+        var wasPaused = _game.IsPaused;
+        _game.ToggleMode();
+        DrainGameEvents();
+        if (wasPaused && !_game.IsPaused)
+        {
+            _ui.BeginInvoke(() => Resumed?.Invoke());
+        }
+    }
+
     private void OnHotkey(int id)
     {
         if (_hidden)
@@ -919,7 +933,7 @@ internal sealed unsafe class EngineHost : IDisposable
 
         if (id == HotkeyManager.ToggleId)
         {
-            _game.ToggleMode();
+            ToggleMode();
         }
         else if (id == HotkeyManager.EscapeId && _game.Mode == ControlMode.Manual)
         {
