@@ -47,6 +47,13 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args is ["--preview-hero", var heroPath, ..])
+        {
+            PreviewSheet.SaveHero(heroPath);
+            Shutdown();
+            return;
+        }
+
         if (e.Args is ["--preview-settings", var settingsFolder, ..])
         {
             _settings = SettingsService.Load();
@@ -99,7 +106,7 @@ public partial class App : Application
         _status = _status with { Paused = _settings.Current.Paused, Level = _settings.Progress.Level };
         UpdateTrayIcon();
 
-        _engine = new EngineHost(_settings.Current.Clone(), _settings.Progress.Clone(), Dispatcher);
+        _engine = new EngineHost(_settings.Current.Clone(), _settings.Progress.Clone(), Dispatcher) { DemoMode = e.Args.Contains("--demo") };
         _engine.StatusChanged += OnEngineStatus;
         _engine.ProgressChanged += progress => _settings.SetProgress(progress);
         _engine.ContextMenuRequested += ShowMenu;

@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compilar y probar
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restaurar
+        run: dotnet restore Lander.slnx
+
+      - name: Compilar (avisos como errores)
+        run: dotnet build Lander.slnx --configuration Release --no-restore -p:ContinuousIntegrationBuild=true
+
+      - name: Tests
+        run: dotnet test --project tests/Lander.Core.Tests/Lander.Core.Tests.csproj --configuration Release --no-build

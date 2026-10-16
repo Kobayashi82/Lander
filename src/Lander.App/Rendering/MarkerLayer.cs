@@ -87,7 +87,7 @@ internal sealed class MarkerLayer(HashSet<nint> ownWindows) : IDisposable
         _pool.Clear();
     }
 
-    private static void DrawCrystal(DrawingContext dc, int size, double scale, double time)
+    internal static void DrawCrystal(DrawingContext dc, int size, double scale, double time)
     {
         var center = new Point(size / 2.0, size / 2.0 + Math.Sin(time * 2.4) * 3 * scale);
         var pulse = 0.55 + 0.25 * Math.Sin(time * 3.1);
@@ -108,7 +108,7 @@ internal sealed class MarkerLayer(HashSet<nint> ownWindows) : IDisposable
         }
     }
 
-    private static void DrawBeacon(DrawingContext dc, int width, int height, MarkerSpec marker, double time, bool dark)
+    internal static void DrawBeacon(DrawingContext dc, int width, int height, MarkerSpec marker, double time, bool dark)
     {
         var scale = marker.Scale;
         var ground = new Point(width / 2.0, height - 10 * scale);

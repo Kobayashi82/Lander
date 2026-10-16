@@ -1,0 +1,48 @@
+name: Publicar versión
+
+# Al subir una etiqueta como v0.1.0 se compila, se prueba y se crea una versión en GitHub con los dos
+# ejecutables: el pequeño (necesita el .NET 10 Desktop Runtime) y el autónomo.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publicar
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Versión
+        id: version
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          "value=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Tests
+        run: dotnet test --project tests/Lander.Core.Tests/Lander.Core.Tests.csproj --configuration Release -p:ContinuousIntegrationBuild=true
+
+      - name: Publicar ejecutables
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.value }}"
+          foreach ($profile in "win-x64", "win-x64-standalone") {
+            dotnet publish src/Lander.App/Lander.App.csproj -p:PublishProfile=$profile -p:Version=$version -p:ContinuousIntegrationBuild=true
+            Compress-Archive -Path "artifacts/publish/$profile/Lander.exe" -DestinationPath "artifacts/Lander-$version-$profile.zip"
+          }
+
+      - name: Crear la versión
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Lander ${{ steps.version.outputs.value }}
+          generate_release_notes: true
+          files: artifacts/*.zip

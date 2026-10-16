@@ -66,6 +66,8 @@ internal sealed unsafe class EngineHost : IDisposable
     private WinEventWatcher? _winEvents;
     private HotkeyManager _hotkeys = null!;
     private RecycleBinWatcher? _recycleBin;
+    private VirtualDesktopKeeper? _desktops;
+    private bool _desktopCheck = true;
     private AudioEngine _audio = null!;
     private LanderSkin _skin = SkinCatalog.Classic;
     private nint _timer;
@@ -132,6 +134,12 @@ internal sealed unsafe class EngineHost : IDisposable
 
     /// <summary>Aviso para mostrar en la bandeja: título y texto (en el hilo de la interfaz).</summary>
     public event Action<string, string>? Notification;
+
+    /// <summary>
+    /// Modo demostración (<c>--demo</c>): simula a alguien delante del PC y vuela mucho más a menudo.
+    /// Útil para grabar vídeos y para probar el comportamiento.
+    /// </summary>
+    public bool DemoMode { get; init; }
 
     /// <summary>Progreso final, disponible tras <see cref="Stop"/>.</summary>
     public PilotProgress? FinalProgress { get; private set; }
@@ -249,6 +257,7 @@ internal sealed unsafe class EngineHost : IDisposable
 
         _audio = new AudioEngine();
         ApplyAudio();
+        _desktops = new VirtualDesktopKeeper();
 
         _timer = Native.CreateWaitableTimerEx(0, null, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
         if (_timer == 0)
@@ -262,7 +271,7 @@ internal sealed unsafe class EngineHost : IDisposable
         _system.Update(now, _monitors, _ownWindows);
         RebuildWorld(now);
 
-        _game = new LanderGame(_settings.ToGameOptions(), _progress, new GameRandom());
+        _game = new LanderGame(BuildGameOptions(_settings), _progress, new GameRandom());
         _game.Initialize(_world);
         if (_settings.Paused)
         {
@@ -375,6 +384,12 @@ internal sealed unsafe class EngineHost : IDisposable
         if ((_terrainDirty && now - _lastScan >= minScanInterval) || now >= _nextSafetyScan)
         {
             RebuildWorld(now);
+        }
+
+        if (_desktopCheck)
+        {
+            _desktopCheck = false;
+            _desktops?.Follow(_ownWindows, Native.GetForegroundWindow());
         }
 
         ProcessPendingWindows(now);
@@ -499,7 +514,7 @@ internal sealed unsafe class EngineHost : IDisposable
             _sensors.Cursor = cursor;
         }
 
-        _sensors.UserIdleSeconds = SystemStatus.UserIdleSeconds();
+        _sensors.UserIdleSeconds = DemoMode ? 0 : SystemStatus.UserIdleSeconds();
         _sensors.BatteryLow = _system.BatteryLow;
         _sensors.PowerSaver = _system.PowerSaver;
         _sensors.DarkMode = _system.DarkMode;
@@ -1025,6 +1040,7 @@ internal sealed unsafe class EngineHost : IDisposable
 
             case EVENT_SYSTEM_FOREGROUND:
                 _system.InvalidateFullscreen();
+                _desktopCheck = true;
                 break;
 
             default:
@@ -1266,7 +1282,7 @@ internal sealed unsafe class EngineHost : IDisposable
     {
         var previous = _settings;
         _settings = settings;
-        _game.ApplyOptions(settings.ToGameOptions());
+        _game.ApplyOptions(BuildGameOptions(settings));
 
         if (previous.ToggleHotkey != settings.ToggleHotkey)
         {
@@ -1293,6 +1309,12 @@ internal sealed unsafe class EngineHost : IDisposable
         _forceRender = true;
         _tickSoon = true;
         PublishStatus();
+    }
+
+    private GameOptions BuildGameOptions(LanderSettings settings)
+    {
+        var options = settings.ToGameOptions();
+        return DemoMode ? options with { Activity = Math.Max(options.Activity, 1) * 6 } : options;
     }
 
     private LanderSkin ResolveSkin(string id) =>
@@ -1337,6 +1359,7 @@ internal sealed unsafe class EngineHost : IDisposable
             _hotkeys?.Dispose();
             _winEvents?.Dispose();
             _recycleBin?.Dispose();
+            _desktops?.Dispose();
             _audio?.Dispose();
             _markers?.Dispose();
             _window?.Dispose();
