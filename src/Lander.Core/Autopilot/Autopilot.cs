@@ -338,7 +338,7 @@ public sealed class Autopilot(IRandom random)
         if (_sleepBubbleTimer <= 0)
         {
             visual.ShowBubble(new Bubble(BubbleIcon.Sleep, 3.5));
-            _sleepBubbleTimer = random.Range(6, 10);
+            _sleepBubbleTimer = random.Range(10, 18);
         }
 
         if (ctx.Sensors.UserIdleSeconds < 2)

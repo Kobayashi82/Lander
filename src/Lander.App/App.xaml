@@ -1,0 +1,9 @@
+﻿<Application x:Class="Lander.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ShutdownMode="OnExplicitShutdown">
+  <!-- El tema Fluent (ThemeMode) se activa en OnStartup, cuando estos recursos ya están cargados. -->
+  <Application.Resources>
+    <ResourceDictionary Source="UI/Styles.xaml" />
+  </Application.Resources>
+</Application>

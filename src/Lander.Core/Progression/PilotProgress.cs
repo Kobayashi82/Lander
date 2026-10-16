@@ -26,4 +26,22 @@ public sealed class PilotProgress
     public double ManualFlightSeconds { get; set; }
 
     public int Level => Levels.LevelFor(TotalPoints);
+
+    /// <summary>Copia independiente (para guardarla desde otro hilo).</summary>
+    public PilotProgress Clone() => (PilotProgress)MemberwiseClone();
+
+    public void CopyFrom(PilotProgress other)
+    {
+        TotalPoints = other.TotalPoints;
+        CurrentStreak = other.CurrentStreak;
+        BestStreak = other.BestStreak;
+        PerfectLandings = other.PerfectLandings;
+        HardLandings = other.HardLandings;
+        AutoLandings = other.AutoLandings;
+        Crashes = other.Crashes;
+        MissionsCompleted = other.MissionsCompleted;
+        CrystalsCollected = other.CrystalsCollected;
+        FlightSeconds = other.FlightSeconds;
+        ManualFlightSeconds = other.ManualFlightSeconds;
+    }
 }

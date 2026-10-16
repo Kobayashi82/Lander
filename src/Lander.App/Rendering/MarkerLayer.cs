@@ -1,0 +1,143 @@
+using System.Windows;
+using System.Windows.Media;
+using Lander.Core.Game;
+using Lander.Core.Geometry;
+
+namespace Lander.App.Rendering;
+
+internal enum MarkerKind
+{
+    /// <summary>Cristal flotante que hay que recoger.</summary>
+    Crystal,
+
+    /// <summary>Baliza que señala una plataforma de destino.</summary>
+    Beacon,
+}
+
+/// <param name="Position">Cristal: su centro. Baliza: el punto de la plataforma que señala.</param>
+internal readonly record struct MarkerSpec(MarkerKind Kind, Vec2 Position, double Scale, BubbleIcon Icon = BubbleIcon.Star, ImageSource? AppIcon = null);
+
+/// <summary>
+/// Marcadores de misión: cada uno vive en su propia ventanita transparente a los clics, lejos del lander.
+/// </summary>
+internal sealed class MarkerLayer(HashSet<nint> ownWindows) : IDisposable
+{
+    private readonly List<(LayeredWindow Window, FramePresenter Presenter)> _pool = [];
+    private int _visible;
+
+    public bool HasVisible => _visible > 0;
+
+    public void Render(IReadOnlyList<MarkerSpec> markers, double time, bool dark)
+    {
+        for (var i = 0; i < markers.Count; i++)
+        {
+            if (i >= _pool.Count)
+            {
+                var window = new LayeredWindow("Lander marker", clickThrough: true);
+                ownWindows.Add(window.Handle);
+                _pool.Add((window, new FramePresenter()));
+            }
+
+            var (layered, presenter) = _pool[i];
+            var marker = markers[i];
+            var phase = i * 1.7;
+            if (marker.Kind == MarkerKind.Crystal)
+            {
+                var size = Even(64 * marker.Scale);
+                var x = (int)Math.Round(marker.Position.X) - size / 2;
+                var y = (int)Math.Round(marker.Position.Y) - size / 2;
+                presenter.Present(layered, x, y, size, size, dc => DrawCrystal(dc, size, marker.Scale, time + phase));
+            }
+            else
+            {
+                var width = Even(56 * marker.Scale);
+                var height = Even(110 * marker.Scale);
+                var x = (int)Math.Round(marker.Position.X) - width / 2;
+                var y = (int)Math.Round(marker.Position.Y) - height + (int)(10 * marker.Scale);
+                presenter.Present(layered, x, y, width, height, dc => DrawBeacon(dc, width, height, marker, time + phase, dark));
+            }
+        }
+
+        for (var i = markers.Count; i < _visible; i++)
+        {
+            _pool[i].Window.Hide();
+        }
+
+        _visible = markers.Count;
+    }
+
+    public void HideAll()
+    {
+        for (var i = 0; i < _visible; i++)
+        {
+            _pool[i].Window.Hide();
+        }
+
+        _visible = 0;
+    }
+
+    public void Dispose()
+    {
+        foreach (var (window, _) in _pool)
+        {
+            ownWindows.Remove(window.Handle);
+            window.Dispose();
+        }
+
+        _pool.Clear();
+    }
+
+    private static void DrawCrystal(DrawingContext dc, int size, double scale, double time)
+    {
+        var center = new Point(size / 2.0, size / 2.0 + Math.Sin(time * 2.4) * 3 * scale);
+        var pulse = 0.55 + 0.25 * Math.Sin(time * 3.1);
+        dc.DrawEllipse(Skins.LanderParts.Glow(Gfx.Rgb(0x5CF2FF), pulse), null, center, 22 * scale, 22 * scale);
+
+        dc.PushTransform(new MatrixTransform(1.6 * scale, 0, 0, 1.6 * scale, center.X, center.Y));
+        dc.PushTransform(new RotateTransform(Math.Sin(time * 1.3) * 10));
+        Icons.DrawCrystal(dc, 1);
+        dc.Pop();
+        dc.Pop();
+
+        for (var i = 0; i < 3; i++)
+        {
+            var twinkle = Math.Max(0, Math.Sin(time * 4 + i * 2.1));
+            var angle = i * 2.1 + time * 0.4;
+            var point = new Point(center.X + Math.Cos(angle) * 15 * scale, center.Y + Math.Sin(angle) * 12 * scale);
+            ParticleSystem.DrawSparkle(dc, point, 3.2 * scale * twinkle, Colors.White.WithAlpha(twinkle));
+        }
+    }
+
+    private static void DrawBeacon(DrawingContext dc, int width, int height, MarkerSpec marker, double time, bool dark)
+    {
+        var scale = marker.Scale;
+        var ground = new Point(width / 2.0, height - 10 * scale);
+        var accent = Icons.Accent(dark);
+
+        // Onda que se expande sobre la plataforma.
+        var wave = time * 0.8 % 1;
+        dc.DrawEllipse(null, Gfx.Pen(accent.WithAlpha(1 - wave), 1.6 * scale), ground, (6 + 20 * wave) * scale, (2 + 5 * wave) * scale);
+
+        // Flecha que bota hacia abajo.
+        var bounce = Math.Abs(Math.Sin(time * 3)) * 6 * scale;
+        var tip = new Point(ground.X, ground.Y - 10 * scale - bounce);
+        var chevron = Gfx.Polygon(
+            tip.X, tip.Y,
+            tip.X - 9 * scale, tip.Y - 9 * scale,
+            tip.X - 4 * scale, tip.Y - 9 * scale,
+            tip.X, tip.Y - 5 * scale,
+            tip.X + 4 * scale, tip.Y - 9 * scale,
+            tip.X + 9 * scale, tip.Y - 9 * scale);
+        dc.DrawGeometry(Gfx.Brush(accent), Gfx.Pen(Colors.White.WithAlpha(0.8), 1 * scale), chevron);
+
+        // Icono del objetivo en un círculo.
+        var iconCenter = new Point(ground.X, tip.Y - 26 * scale);
+        dc.DrawEllipse(Gfx.Brush(Colors.Black.WithAlpha(0.2)), null, new Point(iconCenter.X, iconCenter.Y + 1.5 * scale), 14 * scale, 14 * scale);
+        dc.DrawEllipse(Gfx.Brush(dark ? Gfx.Rgb(0x2B2B2B) : Colors.White), Gfx.Pen(accent, 1.6 * scale), iconCenter, 13 * scale, 13 * scale);
+        dc.PushTransform(new MatrixTransform(1.2 * scale, 0, 0, 1.2 * scale, iconCenter.X, iconCenter.Y));
+        Icons.Draw(dc, marker.Icon, 0, marker.AppIcon, time, dark);
+        dc.Pop();
+    }
+
+    private static int Even(double value) => Math.Max(8, (int)Math.Ceiling(value / 2) * 2);
+}

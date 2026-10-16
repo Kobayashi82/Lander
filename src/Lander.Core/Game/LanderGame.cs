@@ -313,6 +313,35 @@ public sealed class LanderGame
         }
     }
 
+    /// <summary>Un clic sobre el lander: le hace gracia.</summary>
+    public void Poke()
+    {
+        if (!_initialized || Body.State == BodyState.Destroyed)
+        {
+            return;
+        }
+
+        Visual.Flash(Expression.Happy, 1.5);
+        Visual.ShowBubble(new Bubble(BubbleIcon.Heart, 1.4));
+    }
+
+    /// <summary>Borra el progreso del piloto y quita las mejoras.</summary>
+    public void ResetProgress()
+    {
+        Progress.CopyFrom(new PilotProgress());
+        ProgressVersion++;
+        RefreshUpgrades();
+    }
+
+    private void RefreshUpgrades()
+    {
+        var config = Unlocks.ApplyUpgrades(_baseConfig, Progress.Level);
+        var fuelFraction = Body.FuelFraction;
+        _physics.Config = config;
+        Body.FuelCapacity = config.FuelCapacity;
+        Body.Fuel = fuelFraction * config.FuelCapacity;
+    }
+
     public void BeginDrag(Vec2 cursor)
     {
         if (!_initialized || Body.State == BodyState.Destroyed)
@@ -607,11 +636,7 @@ public sealed class LanderGame
         var after = Progress.Level;
         if (after > before)
         {
-            var config = Unlocks.ApplyUpgrades(_baseConfig, after);
-            var fuelFraction = Body.FuelFraction;
-            _physics.Config = config;
-            Body.FuelCapacity = config.FuelCapacity;
-            Body.Fuel = fuelFraction * config.FuelCapacity;
+            RefreshUpgrades();
             Visual.CelebrateTime = 2;
             Visual.ShowBubble(new Bubble(BubbleIcon.Trophy, 2.5));
             _events.Add(new GameEvent(GameEventKind.LevelUp, Body.Position)
@@ -640,14 +665,40 @@ public sealed class LanderGame
         }
     }
 
-    private void PlaceAtBase()
+    /// <summary>
+    /// Muda el lander a otra base (por ejemplo, a otro monitor cuando el suyo pasa a pantalla completa).
+    /// </summary>
+    public void Relocate(Platform ground)
     {
-        var ground = World.PrimaryGround ?? (World.Platforms.Count > 0 ? World.Platforms[0] : null);
-        if (ground is null)
+        if (!_initialized)
         {
             return;
         }
 
+        if (Mode == ControlMode.Manual)
+        {
+            SetMode(ControlMode.Auto, ModeChangeReason.Fullscreen);
+        }
+
+        PlaceOnGround(ground);
+        UpdateScale();
+        PlaceOnGround(ground);
+        Visual.Opacity = 0;
+        PrepareContext(Sensors, TimeStep);
+        Autopilot.Resume(_context);
+    }
+
+    private void PlaceAtBase()
+    {
+        var ground = World.PrimaryGround ?? (World.Platforms.Count > 0 ? World.Platforms[0] : null);
+        if (ground is not null)
+        {
+            PlaceOnGround(ground);
+        }
+    }
+
+    private void PlaceOnGround(Platform ground)
+    {
         // En la barra de tareas, un poco a la derecha del centro para no tapar el botón de inicio.
         var margin = DestinationPicker.LandingMargin(Body);
         var x = Math.Clamp(ground.CenterX + ground.Width * 0.18, ground.Left + margin, ground.Right - margin);
