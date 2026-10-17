@@ -16,6 +16,9 @@ public sealed class MissionSystem(IRandom random)
 
     public Mission? Current { get; private set; }
 
+    /// <summary>Sin misiones mientras dura una carrera: se retira la que haya y no se ofrecen más.</summary>
+    public bool Suspended { get; set; }
+
     public MissionFrequency Frequency
     {
         get => _frequency;
@@ -34,9 +37,9 @@ public sealed class MissionSystem(IRandom random)
 
     public void Update(World world, LanderBody body, ControlMode mode, Sensors sensors, double dt, List<GameEvent> events)
     {
-        if (Frequency == MissionFrequency.Off)
+        if (Suspended)
         {
-            if (Current is { Status: MissionStatus.Offered })
+            if (Current is not null)
             {
                 Finish(MissionStatus.Expired, body, events);
             }
@@ -44,13 +47,20 @@ public sealed class MissionSystem(IRandom random)
             return;
         }
 
-        if (double.IsNaN(_nextOfferIn))
-        {
-            _nextOfferIn = NextOfferDelay() * 0.5;
-        }
-
         if (Current is null)
         {
+            // Con las misiones desactivadas no se ofrece ninguna sola, pero una pedida desde el menú
+            // sigue su curso.
+            if (Frequency == MissionFrequency.Off)
+            {
+                return;
+            }
+
+            if (double.IsNaN(_nextOfferIn))
+            {
+                _nextOfferIn = NextOfferDelay() * 0.5;
+            }
+
             _nextOfferIn -= dt;
             if (_nextOfferIn <= 0 && sensors.UserIdleSeconds < 60 && !sensors.QuietMode
                 && body.State != BodyState.Destroyed && !world.IsEmpty)
@@ -98,7 +108,7 @@ public sealed class MissionSystem(IRandom random)
     /// <summary>Tomar el control durante la oferta acepta la misión.</summary>
     public void OnModeChanged(ControlMode mode, World world, LanderBody body, List<GameEvent> events)
     {
-        if (mode == ControlMode.Manual && Current is { Status: MissionStatus.Offered })
+        if (mode == ControlMode.Manual && !Suspended && Current is { Status: MissionStatus.Offered })
         {
             Activate(world, body, events);
         }
@@ -167,7 +177,7 @@ public sealed class MissionSystem(IRandom random)
     /// <summary>Fuerza una oferta inmediata (menú de la bandeja). Devuelve si se ha podido ofrecer.</summary>
     public bool OfferNow(World world, LanderBody body, ControlMode mode, List<GameEvent> events, MissionKind? kind = null)
     {
-        if (Current is not null || world.IsEmpty)
+        if (Current is not null || Suspended || world.IsEmpty)
         {
             return false;
         }

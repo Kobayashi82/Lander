@@ -4,6 +4,7 @@ using Lander.App.Rendering.Skins;
 using Lander.Core.Game;
 using Lander.Core.Geometry;
 using Lander.Core.Missions;
+using Lander.Core.Racing;
 
 namespace Lander.App.Rendering;
 
@@ -40,6 +41,8 @@ internal sealed class LanderScene
 
     public ImageSource? MissionIcon { get; set; }
 
+    public Race? Race { get; set; }
+
     public IReadOnlyList<ScorePopup> Popups { get; set; } = [];
 
     public bool Dark { get; set; }
@@ -70,7 +73,11 @@ internal static class SceneRenderer
         if (scene.Visible && scene.ShowHud)
         {
             HudRenderer.DrawGauges(dc, center, scene.Scale, scene.Fuel, scene.Damage, scene.Time);
-            if (scene.Mission is { Status: MissionStatus.Active } mission)
+            if (scene.Race is { } race)
+            {
+                HudRenderer.DrawRace(dc, center, scene.Scale, race, scene.Dark, scene.Time);
+            }
+            else if (scene.Mission is { Status: MissionStatus.Active } mission)
             {
                 HudRenderer.DrawMission(dc, center, scene.Scale, mission, scene.MissionIcon, scene.Dark, scene.Time);
             }

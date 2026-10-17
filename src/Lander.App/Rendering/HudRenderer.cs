@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Media;
 using Lander.Core.Game;
 using Lander.Core.Missions;
+using Lander.Core.Racing;
 
 namespace Lander.App.Rendering;
 
@@ -73,6 +74,64 @@ internal static class HudRenderer
         }
     }
 
+    /// <summary>
+    /// Insignia de la carrera: bandera (o la medalla al terminar), balizas alcanzadas en el anillo y el
+    /// cronómetro debajo.
+    /// </summary>
+    public static void DrawRace(DrawingContext dc, Point center, double scale, Race race, bool dark, double time)
+    {
+        var radius = 10 * scale;
+        var at = new Point(center.X - 34 * scale, center.Y - 4 * scale);
+        var fill = dark ? Gfx.Rgb(0x2B2B2B, 235) : Gfx.Rgb(0xFFFFFF, 240);
+        var fade = race.IsActive ? 1 : Math.Clamp((RaceSystem.ResultDuration - race.ResultAge) / 0.5, 0, 1);
+        if (fade <= 0.01)
+        {
+            return;
+        }
+
+        dc.PushOpacity(fade);
+        dc.DrawEllipse(Gfx.Brush(Colors.Black.WithAlpha(0.18)), null, new Point(at.X, at.Y + 1.2 * scale), radius + scale, radius + scale);
+        dc.DrawEllipse(Gfx.Brush(fill), null, at, radius, radius);
+
+        var gold = Gfx.Rgb(0xFFD23F);
+        var ringColor = race.Status switch
+        {
+            RaceStatus.Finished => gold,
+            RaceStatus.Failed => Gfx.Rgb(0xEF4444),
+            _ => Icons.Accent(dark),
+        };
+        DrawArc(dc, at, radius - 1.2 * scale, race.Status == RaceStatus.Finished ? 1 : race.Progress, Gfx.Pen(ringColor, 1.8 * scale));
+
+        var icon = race.Medal switch
+        {
+            RaceMedal.Gold => BubbleIcon.MedalGold,
+            RaceMedal.Silver => BubbleIcon.MedalSilver,
+            RaceMedal.Bronze => BubbleIcon.MedalBronze,
+            _ => BubbleIcon.Flag,
+        };
+        dc.PushTransform(new MatrixTransform(0.78 * scale, 0, 0, 0.78 * scale, at.X, at.Y));
+        Icons.Draw(dc, icon, 0, null, time, dark);
+        dc.Pop();
+
+        // Cronómetro: parpadea mientras espera el despegue.
+        var color = race.Status switch
+        {
+            RaceStatus.Finished => gold,
+            RaceStatus.Failed => Gfx.Rgb(0xFF6B6B),
+            _ => Colors.White,
+        };
+        var blink = race.Status == RaceStatus.Ready && time % 1 > 0.6 ? 0.35 : 1;
+        var text = new FormattedText(Race.FormatTime(race.Elapsed), CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Bold, 10.5 * scale, Gfx.Brush(color), 1);
+        // Centrado bajo la insignia; si es largo, crece hacia la izquierda para no pisar el lander.
+        var origin = new Point(Math.Min(at.X - text.Width / 2, at.X + radius - text.Width), at.Y + radius + 2 * scale);
+        var geometry = text.BuildGeometry(origin);
+        dc.PushOpacity(blink);
+        dc.DrawGeometry(null, Gfx.Pen(Colors.Black.WithAlpha(0.6), 2.4 * scale), geometry);
+        dc.DrawGeometry(Gfx.Brush(color), null, geometry);
+        dc.Pop();
+        dc.Pop();
+    }
+
     /// <summary>Puntos flotantes que suben y se desvanecen.</summary>
     public static void DrawPopup(DrawingContext dc, ScorePopup popup, double scale)
     {
@@ -83,6 +142,7 @@ internal static class HudRenderer
         {
             PopupStyle.Perfect => Gfx.Rgb(0xFFD23F),
             PopupStyle.Bonus => Gfx.Rgb(0x5CE1E6),
+            PopupStyle.Penalty => Gfx.Rgb(0xFF6B6B),
             _ => Colors.White,
         };
 

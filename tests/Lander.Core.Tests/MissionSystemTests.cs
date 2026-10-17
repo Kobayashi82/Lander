@@ -167,6 +167,23 @@ public class MissionSystemTests
     }
 
     [Fact]
+    public void A_requested_mission_runs_even_when_missions_are_off()
+    {
+        var world = Desktop();
+        var body = BodyOnGround(world);
+        _missions.Frequency = MissionFrequency.Off;
+        _missions.OfferNow(world, body, ControlMode.Manual, _events, MissionKind.CollectCrystals);
+        var mission = _missions.Current!;
+
+        body.Fly(Lander.Core.Geometry.Vec2.Zero);
+        body.Position = mission.Crystals[0];
+        _missions.Update(world, body, ControlMode.Manual, new Sensors(), Sim.Dt, _events);
+
+        Assert.Equal(mission.TotalCrystals - 1, mission.Crystals.Count);
+        Assert.True(mission.TimeLeft < mission.Duration);
+    }
+
+    [Fact]
     public void No_offers_when_missions_are_off()
     {
         var world = Desktop();

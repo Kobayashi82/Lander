@@ -14,6 +14,7 @@ using Lander.Core.Geometry;
 using Lander.Core.Missions;
 using Lander.Core.Physics;
 using Lander.Core.Progression;
+using Lander.Core.Racing;
 using Lander.Core.Settings;
 using Lander.Core.Terrain;
 using static Lander.App.Interop.NativeConstants;
@@ -21,7 +22,7 @@ using static Lander.App.Interop.NativeConstants;
 namespace Lander.App.Engine;
 
 /// <summary>Estado que la interfaz necesita conocer (menú de la bandeja).</summary>
-internal sealed record EngineStatus(ControlMode Mode, bool Paused, int Level, bool HotkeyAvailable);
+internal sealed record EngineStatus(ControlMode Mode, bool Paused, int Level, bool HotkeyAvailable, bool Racing = false, bool CanRepeatRace = false, double? RaceRecord = null);
 
 /// <summary>
 /// El motor de Lander en su propio hilo: lee el escritorio, avanza la simulación con paso fijo, dibuja
@@ -105,6 +106,8 @@ internal sealed unsafe class EngineHost : IDisposable
     private int _pushedVersion = -1;
     private int _pushedFlightBucket;
     private double _nextProgressPush;
+    private int _demoRaces;
+    private double _nextDemoRace = 5;
 
     // Contadores de diagnóstico (se registran en compilaciones Debug).
     private int _statTicks;
@@ -147,6 +150,9 @@ internal sealed unsafe class EngineHost : IDisposable
     /// <summary>Piloto simulado para el modo manual (<c>--demo-manual</c>).</summary>
     public DemoPilot? DemoPilot { get; init; }
 
+    /// <summary>El piloto simulado corre una carrera tras otra (<c>--demo-race</c>).</summary>
+    public bool DemoRace { get; init; }
+
     /// <summary>Progreso final, disponible tras <see cref="Stop"/>.</summary>
     public PilotProgress? FinalProgress { get; private set; }
 
@@ -177,8 +183,17 @@ internal sealed unsafe class EngineHost : IDisposable
     {
         if (!_game.OfferMission())
         {
-            RaiseNotification("Sin misiones ahora", "Ya hay una misión en curso o no hay sitio para una.");
+            RaiseNotification("Sin misiones ahora", "Ya hay una misión o una carrera en curso, o no hay sitio para una.");
         }
+    });
+
+    /// <summary>Empieza una carrera por un circuito nuevo o repite el último para batir el récord.</summary>
+    public void StartRace(bool repeat = false) => Post(() => BeginRace(repeat));
+
+    public void AbandonRace() => Post(() =>
+    {
+        _game.AbandonRace();
+        DrainGameEvents();
     });
 
     public void ResetProgress() => Post(() =>
@@ -454,6 +469,14 @@ internal sealed unsafe class EngineHost : IDisposable
         if (DemoPilot is not null && _game.Mode == ControlMode.Auto && !_game.IsPaused && _game.Time > 3)
         {
             _game.SetMode(ControlMode.Manual, ModeChangeReason.User);
+        }
+
+        if (DemoRace && _game.Mode == ControlMode.Manual && _game.Races.Current is null && _game.Body.IsLanded && _game.Time > _nextDemoRace)
+        {
+            _nextDemoRace = _game.Time + 10;
+            // Una carrera tras otra: la mitad de las veces repite el circuito para intentar batir el récord.
+            _demoRaces++;
+            BeginRace(repeat: _demoRaces % 2 == 0 && _game.Races.CanRepeat);
         }
 
         var manual = _game.Mode == ControlMode.Manual;
@@ -782,6 +805,40 @@ internal sealed unsafe class EngineHost : IDisposable
                 _particles.Sparkles(position, 22 * scale, Gfx.Rgb(0x5CF2FF), 14, scale);
                 Play(Sound.Crystal);
                 break;
+
+            case GameEventKind.RaceStarted:
+                Play(Sound.Pop, 0.8);
+                Log.Info($"Carrera: {gameEvent.Race!.Checkpoints.Count} balizas, tiempo de referencia {Race.FormatTime(gameEvent.Race.ParSeconds)} s.");
+                PublishStatus();
+                break;
+
+            case GameEventKind.RaceCheckpoint when gameEvent.Magnitude > 0:
+                _particles.Sparkles(position, 24 * scale, Gfx.Rgb(0x60CDFF), 12, scale);
+                Play(Sound.Crystal, 0.8);
+                break;
+
+            case GameEventKind.RaceFinished:
+            {
+                var race = gameEvent.Race!;
+                _particles.Confetti(position - new Vec2(0, 20 * scale), scale, 44);
+                Play(Sound.Fanfare);
+                Log.Info($"Carrera terminada en {Race.FormatTime(race.Elapsed)} s (referencia {Race.FormatTime(race.ParSeconds)} s, penalización {race.Penalties:0} s): {race.Medal}{(race.IsNewRecord ? ", récord" : string.Empty)}.");
+                PublishStatus();
+                break;
+            }
+
+            case GameEventKind.RaceFailed:
+                Play(Sound.Pop, 0.6);
+                Log.Info($"Carrera perdida: {gameEvent.Race!.Failure}.");
+                PublishStatus();
+                break;
+
+            case GameEventKind.AchievementUnlocked:
+                var achievement = gameEvent.Achievement!;
+                Play(Sound.PerfectChime, 0.8);
+                Log.Info($"Logro: {achievement.Name}.");
+                RaiseNotification($"Logro: {achievement.Name}", achievement.Description);
+                break;
         }
     }
 
@@ -910,6 +967,40 @@ internal sealed unsafe class EngineHost : IDisposable
         }
 
         return null;
+    }
+
+    private void BeginRace(bool repeat)
+    {
+        if (_hidden)
+        {
+            RaiseNotification("Ahora no", "Hay algo a pantalla completa. Prueba otra vez cuando termine.");
+            return;
+        }
+
+        var wasPaused = _game.IsPaused;
+        var result = _game.StartRace(repeat);
+        DrainGameEvents();
+        _tickSoon = true;
+        if (result != RaceStartResult.Started)
+        {
+            Log.Info($"No se puede empezar la carrera: {result}.");
+        }
+
+        switch (result)
+        {
+            case RaceStartResult.Started when wasPaused && !_game.IsPaused:
+                _ui.BeginInvoke(() => Resumed?.Invoke());
+                break;
+            case RaceStartResult.NoCircuit:
+                RaiseNotification("No hay circuito", "Hacen falta al menos dos ventanas abiertas y a la vista para poner las balizas.");
+                break;
+            case RaceStartResult.CircuitGone:
+                RaiseNotification("El circuito ya no está", "Alguna de sus ventanas se ha cerrado o está tapada. Empieza una carrera nueva.");
+                break;
+            case RaceStartResult.NotReady:
+                RaiseNotification("Ahora no", "El lander no puede salir en este momento.");
+                break;
+        }
     }
 
     /// <summary>Alterna entre automático y manual; tomar el control saca al lander de la pausa.</summary>
@@ -1208,8 +1299,12 @@ internal sealed unsafe class EngineHost : IDisposable
         _scene.Mission = _game.Missions.Current;
         _scene.MissionIcon = _scene.Mission is { Kind: MissionKind.LandOnApp } mission ? _icons.Get(mission.AppHandle) : null;
         _scene.Popups = visual.Popups;
+        var race = _game.Races.Current;
+        _scene.Race = race;
+        var raceSignature = race is null ? 0 : HashCode.Combine(race.Status, race.Next, race.Medal, (int)(race.Elapsed * 10), (int)(race.ResultAge * 4));
 
         var signature = HashCode.Combine(
+            raceSignature,
             HashCode.Combine(x, y, size, (int)(angle * 300), (int)(body.LegsDeploy * 40), visual.Expression, (int)(visual.Look.X * 20), (int)(visual.Look.Y * 20)),
             HashCode.Combine(blink > 0.5, (int)(visual.MainFlame * 50), (int)(visual.Opacity * 40), visual.Bubble, (int)(bubbleAge * 30), visual.Popups.Count, (int)(body.FuelFraction * 60)),
             HashCode.Combine(_sensors.DarkMode ? (int)(animationTime * 4) : 0, visual.ShowHud, _skin, body.State, (int)(body.Damage * 20), _scene.Mission?.Status, (int)((_scene.Mission?.TimeLeft ?? 0) * 2)));
@@ -1242,7 +1337,11 @@ internal sealed unsafe class EngineHost : IDisposable
     {
         _markerSpecs.Clear();
         var body = _game.Body;
-        if (_game.Mode == ControlMode.Manual && _game.Missions.Current is { Status: MissionStatus.Active } mission)
+        if (_game.Mode == ControlMode.Manual && _game.Races.Current is { IsActive: true } race)
+        {
+            AddRaceMarkers(race, body);
+        }
+        else if (_game.Mode == ControlMode.Manual && _game.Missions.Current is { Status: MissionStatus.Active } mission)
         {
             var scale = body.Scale;
             switch (mission.Kind)
@@ -1300,6 +1399,31 @@ internal sealed unsafe class EngineHost : IDisposable
         }
     }
 
+    /// <summary>La próxima baliza con su número (o la casa, si toca volver) y, más tenue, la siguiente.</summary>
+    private void AddRaceMarkers(Race race, LanderBody body)
+    {
+        var scale = body.Scale;
+        var from = body.Position;
+        for (var i = race.Next; i < race.Checkpoints.Count && i <= race.Next + 1; i++)
+        {
+            var checkpoint = race.Checkpoints[i];
+            if (checkpoint.IsBase && body.IsOnBase)
+            {
+                break;
+            }
+
+            if (RaceSystem.TargetPoint(_world, checkpoint, from, 60 * scale) is not { } point)
+            {
+                continue;
+            }
+
+            var label = checkpoint.IsBase ? null : (i + 1).ToString(System.Globalization.CultureInfo.CurrentCulture);
+            var markerScale = i == race.Next ? scale : scale * 0.8;
+            _markerSpecs.Add(new MarkerSpec(MarkerKind.Beacon, point, markerScale, BubbleIcon.Home, Label: label, Alpha: i == race.Next ? 1 : 0.45));
+            from = point;
+        }
+    }
+
     // Ajustes, estado y progreso ----------------------------------------------------------------------
 
     private void OnSettingsChanged(LanderSettings settings)
@@ -1352,7 +1476,15 @@ internal sealed unsafe class EngineHost : IDisposable
 
     private void PublishStatus()
     {
-        var status = new EngineStatus(_game?.Mode ?? ControlMode.Auto, _game?.IsPaused ?? _settings.Paused, _progress.Level, _hotkeyAvailable);
+        var races = _game?.Races;
+        var status = new EngineStatus(
+            _game?.Mode ?? ControlMode.Auto,
+            _game?.IsPaused ?? _settings.Paused,
+            _progress.Level,
+            _hotkeyAvailable,
+            races?.IsActive ?? false,
+            races?.CanRepeat ?? false,
+            races?.LastCircuitRecord);
         _ui.BeginInvoke(() => StatusChanged?.Invoke(status));
     }
 

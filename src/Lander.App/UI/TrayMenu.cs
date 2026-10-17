@@ -9,6 +9,7 @@ using Lander.App.Rendering;
 using Lander.App.Services;
 using Lander.Core.Game;
 using Lander.Core.Progression;
+using Lander.Core.Racing;
 
 namespace Lander.App.UI;
 
@@ -20,6 +21,11 @@ internal sealed class TrayMenu(SettingsService settings, Func<EngineStatus> stat
     public event Action? ToggleManualRequested;
 
     public event Action? MissionRequested;
+
+    /// <summary>Empezar una carrera; el argumento indica si se repite el último circuito.</summary>
+    public event Action<bool>? RaceRequested;
+
+    public event Action? AbandonRaceRequested;
 
     public event Action? SettingsRequested;
 
@@ -63,6 +69,20 @@ internal sealed class TrayMenu(SettingsService settings, Func<EngineStatus> stat
         toggle.InputGestureText = HotkeyText.Format(current.ToggleHotkey);
         menu.Items.Add(toggle);
         menu.Items.Add(Item("Proponer una misión", () => MissionRequested?.Invoke()));
+        if (engine.Racing)
+        {
+            menu.Items.Add(Item("Abandonar la carrera", () => AbandonRaceRequested?.Invoke()));
+        }
+        else
+        {
+            menu.Items.Add(Item("Empezar una carrera", () => RaceRequested?.Invoke(false)));
+            if (engine.CanRepeatRace)
+            {
+                var record = engine.RaceRecord is { } seconds ? $" (récord {Race.FormatTime(seconds)} s)" : string.Empty;
+                menu.Items.Add(Item("Repetir el circuito" + record, () => RaceRequested?.Invoke(true)));
+            }
+        }
+
         menu.Items.Add(new Separator());
 
         var pilot = new MenuItem { Header = "Pilotaje" };

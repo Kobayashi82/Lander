@@ -4,6 +4,7 @@ using Lander.Core.Geometry;
 using Lander.Core.Missions;
 using Lander.Core.Physics;
 using Lander.Core.Progression;
+using Lander.Core.Racing;
 using Lander.Core.Terrain;
 
 namespace Lander.Core.Game;
@@ -44,6 +45,9 @@ public sealed class LanderGame
     private long _flightOrigin;
     private double _flightOriginFeetY;
     private double _flightClimb;
+    private HashSet<string> _earnedAchievements;
+    private int _achievementVersion;
+    private double _nextAchievementCheck;
     private bool _initialized;
 
     public LanderGame(GameOptions options, PilotProgress progress, IRandom random, PhysicsConfig? physics = null)
@@ -54,6 +58,8 @@ public sealed class LanderGame
         Progress = progress;
         Autopilot = new Autopilot.Autopilot(random);
         Missions = new MissionSystem(random);
+        Races = new RaceSystem(random);
+        _earnedAchievements = Achievements.EarnedBy(progress).Select(a => a.Id).ToHashSet();
         _physics = new PhysicsEngine(Unlocks.ApplyUpgrades(_baseConfig, progress.Level));
         Body.FuelCapacity = _physics.Config.FuelCapacity;
         Body.Fuel = Body.FuelCapacity;
@@ -75,6 +81,8 @@ public sealed class LanderGame
     public Autopilot.Autopilot Autopilot { get; }
 
     public MissionSystem Missions { get; }
+
+    public RaceSystem Races { get; }
 
     public LanderVisual Visual { get; } = new();
 
@@ -179,8 +187,11 @@ public sealed class LanderGame
         UpdateRespawn();
         UpdateStats(dt);
 
+        Races.Update(world, Body, dt, _events);
+        Missions.Suspended = Races.IsActive;
         Missions.Update(world, Body, Mode, sensors, dt, _events);
         ProcessMissionEvents();
+        CheckAchievements();
 
         Visual.ShowHud = Mode == ControlMode.Manual;
         Visual.CarryingPackage = Missions.Current is { Status: MissionStatus.Active, Kind: MissionKind.Delivery };
@@ -266,6 +277,7 @@ public sealed class LanderGame
         else
         {
             Visual.SetBaseExpression(Expression.Neutral);
+            Races.OnModeChanged(mode, Body, _events);
             Autopilot.Resume(_context);
         }
 
@@ -340,6 +352,7 @@ public sealed class LanderGame
     {
         Progress.CopyFrom(new PilotProgress());
         ProgressVersion++;
+        _earnedAchievements.Clear();
         RefreshUpgrades();
     }
 
@@ -391,6 +404,36 @@ public sealed class LanderGame
         var offered = Missions.OfferNow(World, Body, Mode, _events, kind);
         ProcessMissionEvents();
         return offered;
+    }
+
+    /// <summary>
+    /// Traza un circuito (o repite el último) y toma el control para correrlo. El cronómetro arranca al
+    /// despegar.
+    /// </summary>
+    public RaceStartResult StartRace(bool repeat = false)
+    {
+        if (!_initialized)
+        {
+            return RaceStartResult.NotReady;
+        }
+
+        var result = Races.Start(World, Body, repeat, _events);
+        if (result == RaceStartResult.Started)
+        {
+            Missions.Suspended = true;
+            Missions.Update(World, Body, Mode, Sensors, 0, _events);
+            SetMode(ControlMode.Manual, ModeChangeReason.User);
+            _lastManualInput = Time;
+            ProcessMissionEvents();
+        }
+
+        return result;
+    }
+
+    public void AbandonRace()
+    {
+        Races.Abandon(Body, _events);
+        ProcessMissionEvents();
     }
 
     private ThrustInput MapManual(ManualControls controls)
@@ -448,6 +491,7 @@ public sealed class LanderGame
                     }
 
                     Missions.OnTakeoff(physicsEvent.Platform, Body);
+                    Races.OnTakeoff();
                     Emit(GameEventKind.TookOff, physicsEvent);
                     break;
 
@@ -460,6 +504,7 @@ public sealed class LanderGame
                     Progress.CurrentStreak = 0;
                     ProgressVersion++;
                     Missions.OnCrash(Body, _events);
+                    Races.OnCrash(Body, _events);
                     Emit(GameEventKind.Crashed, physicsEvent, manual);
                     ProcessMissionEvents();
                     break;
@@ -578,6 +623,11 @@ public sealed class LanderGame
         });
 
         Missions.OnTouchdown(platform, landing.Quality, manual, World, Body, _events);
+        if (manual)
+        {
+            Races.OnTouchdown(platform, landing.Quality, Body, _events);
+        }
+
         ProcessMissionEvents();
     }
 
@@ -587,6 +637,12 @@ public sealed class LanderGame
         for (; _handledEvents < _events.Count; _handledEvents++)
         {
             var gameEvent = _events[_handledEvents];
+            if (gameEvent.Race is { } race)
+            {
+                ApplyRaceEvent(gameEvent, race);
+                continue;
+            }
+
             if (gameEvent.Mission is not { } mission)
             {
                 continue;
@@ -624,6 +680,96 @@ public sealed class LanderGame
                     }
 
                     break;
+            }
+        }
+    }
+
+    private void ApplyRaceEvent(GameEvent gameEvent, Race race)
+    {
+        switch (gameEvent.Kind)
+        {
+            case GameEventKind.RaceStarted:
+                // Se sale con el depósito lleno y cada baliza lo rellena: la carrera va de rapidez, no de
+                // ahorrar combustible.
+                Body.Fuel = Body.FuelCapacity;
+                Visual.ShowBubble(new Bubble(BubbleIcon.Flag, 2.5));
+                break;
+
+            case GameEventKind.RaceCheckpoint when gameEvent.Magnitude > 0:
+                Body.Fuel = Body.FuelCapacity;
+                var popupAt = PopupAnchor(1.1) + new Vec2(0, -Body.Height * 0.55);
+                var reached = race.Next.ToString(CultureInfo.InvariantCulture) + "/" + race.Checkpoints.Count.ToString(CultureInfo.InvariantCulture);
+                if (race.Next < race.Checkpoints.Count)
+                {
+                    Visual.AddPopup(reached, popupAt, PopupStyle.Bonus);
+                }
+
+                if (race.LastLegPenalized)
+                {
+                    Visual.AddPopup("+" + Race.HardLandingPenalty.ToString(CultureInfo.CurrentCulture) + " s", popupAt + new Vec2(0, Body.Height * 1.1), PopupStyle.Penalty);
+                }
+
+                break;
+
+            case GameEventKind.RaceFinished:
+                Progress.RacesCompleted++;
+                if (race.Medal == RaceMedal.Gold)
+                {
+                    Progress.GoldMedals++;
+                }
+
+                ProgressVersion++;
+                var medal = race.Medal switch
+                {
+                    RaceMedal.Gold => BubbleIcon.MedalGold,
+                    RaceMedal.Silver => BubbleIcon.MedalSilver,
+                    _ => BubbleIcon.MedalBronze,
+                };
+                Visual.ShowBubble(new Bubble(medal, 4));
+                Visual.CelebrateTime = 2;
+                Visual.Flash(Expression.Happy, 3);
+                var at = PopupAnchor(1.6);
+                Visual.AddPopup(Race.FormatTime(race.Elapsed) + " s", at, PopupStyle.Perfect);
+                Visual.AddPopup("+" + gameEvent.Points.ToString(CultureInfo.InvariantCulture), at + new Vec2(0, Body.Height * 0.55), PopupStyle.Bonus);
+                if (race.IsNewRecord && race.PreviousRecord is not null)
+                {
+                    Visual.AddPopup("¡Récord!", at - new Vec2(0, Body.Height * 0.55), PopupStyle.Perfect);
+                }
+
+                AddPoints(gameEvent.Points);
+                break;
+
+            case GameEventKind.RaceFailed:
+                if (race.Failure == RaceFailure.TimeUp)
+                {
+                    Visual.ShowBubble(new Bubble(BubbleIcon.Exclamation, 2.5));
+                    Visual.Flash(Expression.Tired, 2);
+                }
+                else if (Visual.Bubble is { Icon: BubbleIcon.Flag })
+                {
+                    Visual.ClearBubble();
+                }
+
+                break;
+        }
+    }
+
+    /// <summary>Avisa de los logros recién conseguidos (cuando cambia el progreso o, a lo sumo, cada segundo).</summary>
+    private void CheckAchievements()
+    {
+        if (ProgressVersion == _achievementVersion && Time < _nextAchievementCheck)
+        {
+            return;
+        }
+
+        _achievementVersion = ProgressVersion;
+        _nextAchievementCheck = Time + 1;
+        foreach (var achievement in Achievements.All)
+        {
+            if (!_earnedAchievements.Contains(achievement.Id) && achievement.IsEarned(Progress))
+            {
+                _earnedAchievements.Add(achievement.Id);
+                _events.Add(new GameEvent(GameEventKind.AchievementUnlocked, Body.Position) { Achievement = achievement });
             }
         }
     }

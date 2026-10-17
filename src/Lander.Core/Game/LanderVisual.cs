@@ -35,6 +35,12 @@ public enum BubbleIcon
     /// <summary>Icono de una aplicación (misión de aterrizar sobre ella).</summary>
     App,
     Trophy,
+
+    /// <summary>Bandera a cuadros: carrera.</summary>
+    Flag,
+    MedalGold,
+    MedalSilver,
+    MedalBronze,
 }
 
 /// <param name="Icon">Icono principal.</param>
@@ -48,6 +54,9 @@ public enum PopupStyle
     Points,
     Perfect,
     Bonus,
+
+    /// <summary>Penalización (por ejemplo, segundos añadidos en una carrera).</summary>
+    Penalty,
 }
 
 public sealed class ScorePopup(string text, Vec2 position, PopupStyle style)

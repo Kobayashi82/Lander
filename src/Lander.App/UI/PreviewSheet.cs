@@ -7,6 +7,7 @@ using Lander.App.Rendering;
 using Lander.App.Rendering.Skins;
 using Lander.Core.Game;
 using Lander.Core.Geometry;
+using Lander.Core.Racing;
 using Expression = Lander.Core.Game.Expression;
 
 namespace Lander.App.UI;
@@ -38,11 +39,11 @@ internal static class PreviewSheet
         var width = Cell * Poses.Length;
         var bubbleRows = (icons.Length + Poses.Length - 1) / Poses.Length;
         var hudRow = skins.Count + bubbleRows;
-        var height = Cell * (hudRow + 1);
+        var height = Cell * (hudRow + 2);
         var visual = new DrawingVisual();
         using (var dc = visual.RenderOpen())
         {
-            for (var row = 0; row <= hudRow; row++)
+            for (var row = 0; row <= hudRow + 1; row++)
             {
                 var dark = row % 2 == 1;
                 dc.DrawRectangle(Gfx.Brush(dark ? 0x202020U : 0xF3F3F3U), null, new Rect(0, row * Cell, width, Cell));
@@ -72,6 +73,7 @@ internal static class PreviewSheet
             }
 
             DrawHudSamples(dc, hudRow);
+            DrawRaceSamples(dc, hudRow + 1);
         }
 
         var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
@@ -166,6 +168,40 @@ internal static class PreviewSheet
         MarkerLayer.DrawBeacon(dc, 90, 180, new MarkerSpec(MarkerKind.Beacon, default, scale, BubbleIcon.Package), 0.6, dark);
         dc.Pop();
         Label(dc, "Baliza", Cell * 4 + 6, top + 4, dark);
+    }
+
+    /// <summary>Modo carrera: insignia con cronómetro en cada estado y balizas numeradas.</summary>
+    private static void DrawRaceSamples(DrawingContext dc, int row)
+    {
+        var dark = row % 2 == 1;
+        var top = row * Cell;
+        const double scale = 1.5;
+        RaceCheckpoint[] checkpoints = [new(1, null), new(2, null), new(0, null)];
+
+        (string Label, Race Race)[] samples =
+        [
+            ("Carrera · lista", Race.Sample(checkpoints, RaceStatus.Ready, 0, 0)),
+            ("Carrera · en curso", Race.Sample(checkpoints, RaceStatus.Running, 1, 12.4)),
+            ("Carrera · oro", Race.Sample(checkpoints, RaceStatus.Finished, 3, 27.9, RaceMedal.Gold)),
+            ("Carrera · perdida", Race.Sample(checkpoints, RaceStatus.Failed, 2, 64.2)),
+        ];
+
+        for (var i = 0; i < samples.Length; i++)
+        {
+            var center = new Vec2(Cell * (i * 1.25 + 0.75), top + Cell * 0.55);
+            SceneRenderer.DrawLander(dc, SkinCatalog.Classic, center, 0, scale, new LanderPose { Expression = Expression.Focused });
+            HudRenderer.DrawGauges(dc, new Point(center.X, center.Y), scale, 0.8, 0, 0);
+            HudRenderer.DrawRace(dc, new Point(center.X, center.Y), scale, samples[i].Race, dark, 0.2);
+            Label(dc, samples[i].Label, Cell * (i * 1.25 + 0.15), top + 4, dark);
+        }
+
+        dc.PushTransform(new TranslateTransform(Cell * 5.3, top - 30));
+        MarkerLayer.DrawBeacon(dc, 90, 180, new MarkerSpec(MarkerKind.Beacon, default, scale, Label: "2"), 0.6, dark);
+        dc.Pop();
+        dc.PushTransform(new TranslateTransform(Cell * 6.1, top - 18));
+        MarkerLayer.DrawBeacon(dc, 72, 160, new MarkerSpec(MarkerKind.Beacon, default, scale * 0.8, BubbleIcon.Home, Alpha: 0.45), 0.6, dark);
+        dc.Pop();
+        Label(dc, "Balizas de carrera", Cell * 5.3 + 6, top + 4, dark);
     }
 
     /// <summary>

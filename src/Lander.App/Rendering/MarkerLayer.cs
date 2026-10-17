@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
 using Lander.Core.Game;
@@ -15,13 +16,17 @@ internal enum MarkerKind
 }
 
 /// <param name="Position">Cristal: su centro. Baliza: el punto de la plataforma que señala.</param>
-internal readonly record struct MarkerSpec(MarkerKind Kind, Vec2 Position, double Scale, BubbleIcon Icon = BubbleIcon.Star, ImageSource? AppIcon = null);
+/// <param name="Label">Texto corto en lugar del icono (el número de una baliza de carrera).</param>
+/// <param name="Alpha">Opacidad: las balizas que vienen después se ven más tenues.</param>
+internal readonly record struct MarkerSpec(MarkerKind Kind, Vec2 Position, double Scale, BubbleIcon Icon = BubbleIcon.Star, ImageSource? AppIcon = null, string? Label = null, double Alpha = 1);
 
 /// <summary>
 /// Marcadores de misión: cada uno vive en su propia ventanita transparente a los clics, lejos del lander.
 /// </summary>
 internal sealed class MarkerLayer(HashSet<nint> ownWindows) : IDisposable
 {
+    private static readonly Typeface LabelFace = new(new FontFamily("Segoe UI Variable Display, Segoe UI"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
+
     private readonly List<(LayeredWindow Window, FramePresenter Presenter)> _pool = [];
     private int _visible;
 
@@ -113,6 +118,11 @@ internal sealed class MarkerLayer(HashSet<nint> ownWindows) : IDisposable
         var scale = marker.Scale;
         var ground = new Point(width / 2.0, height - 10 * scale);
         var accent = Icons.Accent(dark);
+        var faded = marker.Alpha < 0.99;
+        if (faded)
+        {
+            dc.PushOpacity(marker.Alpha);
+        }
 
         // Onda que se expande sobre la plataforma.
         var wave = time * 0.8 % 1;
@@ -134,9 +144,23 @@ internal sealed class MarkerLayer(HashSet<nint> ownWindows) : IDisposable
         var iconCenter = new Point(ground.X, tip.Y - 26 * scale);
         dc.DrawEllipse(Gfx.Brush(Colors.Black.WithAlpha(0.2)), null, new Point(iconCenter.X, iconCenter.Y + 1.5 * scale), 14 * scale, 14 * scale);
         dc.DrawEllipse(Gfx.Brush(dark ? Gfx.Rgb(0x2B2B2B) : Colors.White), Gfx.Pen(accent, 1.6 * scale), iconCenter, 13 * scale, 13 * scale);
-        dc.PushTransform(new MatrixTransform(1.2 * scale, 0, 0, 1.2 * scale, iconCenter.X, iconCenter.Y));
-        Icons.Draw(dc, marker.Icon, 0, marker.AppIcon, time, dark);
-        dc.Pop();
+        if (marker.Label is { } label)
+        {
+            var ink = dark ? Gfx.Rgb(0xF2F2F2) : Gfx.Rgb(0x1F2328);
+            var text = new FormattedText(label, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, LabelFace, 14 * scale, Gfx.Brush(ink), 1);
+            dc.DrawText(text, new Point(iconCenter.X - text.Width / 2, iconCenter.Y - text.Height / 2));
+        }
+        else
+        {
+            dc.PushTransform(new MatrixTransform(1.2 * scale, 0, 0, 1.2 * scale, iconCenter.X, iconCenter.Y));
+            Icons.Draw(dc, marker.Icon, 0, marker.AppIcon, time, dark);
+            dc.Pop();
+        }
+
+        if (faded)
+        {
+            dc.Pop();
+        }
     }
 
     private static int Even(double value) => Math.Max(8, (int)Math.Ceiling(value / 2) * 2);

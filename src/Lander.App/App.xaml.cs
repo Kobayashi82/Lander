@@ -100,6 +100,8 @@ public partial class App : Application
         _menu = new TrayMenu(_settings, () => _status, _tray.Handle);
         _menu.ToggleManualRequested += () => _engine?.ToggleManual();
         _menu.MissionRequested += () => _engine?.OfferMission();
+        _menu.RaceRequested += repeat => _engine?.StartRace(repeat);
+        _menu.AbandonRaceRequested += () => _engine?.AbandonRace();
         _menu.SettingsRequested += ShowSettings;
         _menu.ExitRequested += Shutdown;
 
@@ -107,8 +109,9 @@ public partial class App : Application
         UpdateTrayIcon();
 
         _engine = new EngineHost(_settings.Current.Clone(), _settings.Progress.Clone(), Dispatcher) {
-            DemoMode = e.Args.Contains("--demo") || e.Args.Contains("--demo-manual"),
-            DemoPilot = e.Args.Contains("--demo-manual") ? new DemoPilot() : null,
+            DemoMode = e.Args.Contains("--demo") || e.Args.Contains("--demo-manual") || e.Args.Contains("--demo-race"),
+            DemoPilot = e.Args.Contains("--demo-manual") || e.Args.Contains("--demo-race") ? new DemoPilot() : null,
+            DemoRace = e.Args.Contains("--demo-race"),
         };
         _engine.StatusChanged += OnEngineStatus;
         if (!_engine.DemoMode)

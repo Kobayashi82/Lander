@@ -21,6 +21,10 @@ public sealed class PilotProgress
 
     public int CrystalsCollected { get; set; }
 
+    public int RacesCompleted { get; set; }
+
+    public int GoldMedals { get; set; }
+
     public double FlightSeconds { get; set; }
 
     public double ManualFlightSeconds { get; set; }
@@ -41,6 +45,8 @@ public sealed class PilotProgress
         Crashes = other.Crashes;
         MissionsCompleted = other.MissionsCompleted;
         CrystalsCollected = other.CrystalsCollected;
+        RacesCompleted = other.RacesCompleted;
+        GoldMedals = other.GoldMedals;
         FlightSeconds = other.FlightSeconds;
         ManualFlightSeconds = other.ManualFlightSeconds;
     }

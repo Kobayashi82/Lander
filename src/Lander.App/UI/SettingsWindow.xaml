@@ -160,6 +160,9 @@
           <ui:SettingCard Glyph="&#xE7FC;" Header="Pilotar ahora" Description="Toma o devuelve el control sin usar el teclado.">
             <Button Content="{Binding ControlButtonText}" Command="{Binding ToggleControlCommand}" MinWidth="160" />
           </ui:SettingCard>
+          <ui:SettingCard Glyph="&#xE7C1;" Header="Carrera contrarreloj" Description="Se ponen balizas numeradas sobre tus ventanas: posa el lander en cada una, en orden, y vuelve a la base. El cronómetro arranca al despegar.">
+            <Button Content="Empezar" Command="{Binding StartRaceCommand}" MinWidth="160" />
+          </ui:SettingCard>
         </StackPanel>
 
         <!-- Aspecto ======================================================================= -->
@@ -351,6 +354,53 @@
                     <TextBlock Text="{Binding Label}" Style="{StaticResource SecondaryTextStyle}" />
                   </StackPanel>
                 </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+
+          <DockPanel>
+            <TextBlock DockPanel.Dock="Right" Text="{Binding AchievementSummary}" Style="{StaticResource SecondaryTextStyle}" VerticalAlignment="Bottom" Margin="0,0,0,8" />
+            <TextBlock Text="Logros" Style="{StaticResource SectionHeaderStyle}" />
+          </DockPanel>
+          <ItemsControl ItemsSource="{Binding AchievementRows}">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <UniformGrid Columns="2" />
+              </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="6" Padding="14,10" Margin="0,0,4,4">
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="30" />
+                      <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="StateGlyph" Text="&#xE734;" FontFamily="{StaticResource SymbolFont}" FontSize="18" VerticalAlignment="Top" Margin="0,2,0,0"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" Opacity="0.6" />
+                    <StackPanel Grid.Column="1">
+                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                      <TextBlock Text="{Binding Description}" Style="{StaticResource SecondaryTextStyle}" TextWrapping="Wrap" />
+                      <Grid Margin="0,6,0,0">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ProgressBar x:Name="Bar" Value="{Binding Progress, Mode=OneWay}" Maximum="100" Height="4" VerticalAlignment="Center" Margin="0,0,10,0" />
+                        <TextBlock Grid.Column="1" Text="{Binding ProgressText}" Style="{StaticResource SecondaryTextStyle}" />
+                      </Grid>
+                    </StackPanel>
+                  </Grid>
+                </Border>
+                <DataTemplate.Triggers>
+                  <DataTrigger Binding="{Binding IsEarned}" Value="True">
+                    <Setter TargetName="StateGlyph" Property="Text" Value="&#xE735;" />
+                    <Setter TargetName="StateGlyph" Property="Foreground" Value="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                    <Setter TargetName="StateGlyph" Property="Opacity" Value="1" />
+                    <Setter TargetName="Bar" Property="Visibility" Value="Hidden" />
+                  </DataTrigger>
+                </DataTemplate.Triggers>
               </DataTemplate>
             </ItemsControl.ItemTemplate>
           </ItemsControl>

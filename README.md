@@ -13,6 +13,7 @@
   <a href="https://github.com/Kobayashi82/Lander/actions/workflows/ci.yml"><img src="https://github.com/Kobayashi82/Lander/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4" alt="Windows 10 | 11" />
   <img src="https://img.shields.io/badge/.NET-10-512BD4" alt=".NET 10" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/licencia-MIT-green" alt="Licencia MIT" /></a>
 </p>
 
 ---
@@ -50,6 +51,18 @@ el control: se convierte en un minijuego de *Lunar Lander* sobre tu propio escri
   niveles de piloto, mejoras y aspectos desbloqueables.
 - Misiones cortas: posarse sobre una aplicación concreta, recoger cristales, ida y vuelta sin repostar o
   llevar un paquete a otro monitor.
+
+**Modo carrera**
+- Un circuito contrarreloj sobre tus propias ventanas: balizas numeradas sobre sus barras de título que
+  hay que visitar en orden antes de volver a la base. El cronómetro arranca al despegar.
+- Cada baliza rellena el depósito; un aterrizaje brusco suma 2 segundos y un accidente te deja fuera.
+- Medalla de oro, plata o bronce según un tiempo de referencia calculado a partir del recorrido. Puedes
+  repetir el mismo circuito para batir tu récord.
+- Desde el menú del lander o de la bandeja (**Empezar una carrera**) o en **Ajustes → General**.
+
+**Logros**
+- Catorce logros sencillos a partir de tus estadísticas: rachas, cristales, misiones, medallas, horas de
+  vuelo… Se ven con su progreso en **Ajustes → Piloto**.
 
 **Nunca estorba**
 - El ratón atraviesa toda la capa del juego salvo el propio lander. No roba el foco ni aparece en
@@ -89,8 +102,12 @@ Descarga la última versión desde [Releases](https://github.com/Kobayashi82/Lan
   [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0).
 - `Lander-x.y.z-win-x64-standalone.zip`: no necesita instalar nada (≈65 MB).
 
-Descomprime `Lander.exe` donde quieras y ejecútalo. El lander aparecerá en la barra de tareas y su
-icono en el área de notificación. Para que arranque con Windows, actívalo en **Ajustes → General**.
+Si no sabes cuál elegir, descarga el autónomo. En ambos casos es un único `Lander.exe`, sin instalador:
+descomprímelo donde quieras y ejecútalo. El lander aparecerá en la barra de tareas y su icono en el área
+de notificación. Para que arranque con Windows, actívalo en **Ajustes → General**.
+
+El ejecutable no está firmado, así que la primera vez Windows SmartScreen puede avisar de que es una
+aplicación desconocida: pulsa **Más información → Ejecutar de todas formas**.
 
 Requisitos: Windows 10 u 11 (x64). Está pensado para Windows 11.
 
@@ -119,6 +136,7 @@ GitHub Actions compila, prueba y publica una versión con ambos ejecutables.
 | `--exit` | Cierra limpiamente la instancia en marcha. |
 | `--demo` | Modo demostración: simula a alguien delante del PC y vuela mucho más a menudo. No guarda el progreso. |
 | `--demo-manual` | Como `--demo`, pero pilotando en modo manual con un piloto simulado (sin capturar el teclado). |
+| `--demo-race` | Como `--demo-manual`, pero corriendo una carrera tras otra (necesita al menos dos ventanas a la vista). |
 | `--preview archivo.png` | Dibuja todos los aspectos, expresiones, bocadillos y el HUD en una imagen. |
 | `--preview-hero archivo.png` | Genera la imagen de portada de este README. |
 | `--preview-settings carpeta` | Guarda cada página de los ajustes como imagen, sin mostrarlos. |
@@ -129,7 +147,8 @@ GitHub Actions compila, prueba y publica una versión con ambos ejecutables.
 ```
 src/
   Lander.Core/    Simulación pura y testeable, sin dependencias de Windows:
-                  terreno, física, piloto automático, misiones, progresión y ajustes.
+                  terreno, física, piloto automático, misiones, carreras, progresión,
+                  logros y ajustes.
   Lander.App/     Aplicación WPF: integración con Windows, motor, render, sonido,
                   bandeja del sistema y ventana de ajustes.
 tests/
@@ -151,11 +170,12 @@ posición de las ventanas y el nombre de su aplicación; nunca su contenido.
 ## Estado
 
 Implementadas las fases 1 a 6 del diseño (prototipo, terreno real, modo manual, modo automático,
-pulido y extras) y la publicación automática de ejecutables. Pendiente:
+pulido y extras), el modo carrera, los logros y la publicación automática de ejecutables. Ideas
+pendientes:
 
-- Instalador firmado (MSIX) y publicación en Microsoft Store o itch.io.
-- Varios landers a la vez y modo carrera con balizas y cronómetro.
+- Varios landers a la vez.
+- Instalador (MSIX) y publicación en Microsoft Store o itch.io.
 
 ## Licencia
 
-Pendiente de definir.
+[MIT](LICENSE).

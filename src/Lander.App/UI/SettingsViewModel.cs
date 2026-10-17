@@ -79,6 +79,9 @@ public sealed record UnlockRow(string Name, string Description, string LevelText
 /// <summary>Una cifra de las estadísticas del piloto.</summary>
 public sealed record StatTile(string Value, string Label);
 
+/// <summary>Un logro en la lista: conseguido o con su progreso.</summary>
+public sealed record AchievementRow(string Name, string Description, string ProgressText, double Progress, bool IsEarned);
+
 public sealed class SettingsViewModel : ObservableObject
 {
     private readonly SettingsService _service;
@@ -107,6 +110,7 @@ public sealed class SettingsViewModel : ObservableObject
         OpenRepositoryCommand = new RelayCommand(() => Open("https://github.com/Kobayashi82/Lander"));
         ResetProgressCommand = new RelayCommand(ResetProgress);
         OfferMissionCommand = new RelayCommand(() => _app.Engine?.OfferMission());
+        StartRaceCommand = new RelayCommand(() => _app.Engine?.StartRace());
         ToggleControlCommand = new RelayCommand(() => _app.Engine?.ToggleManual());
 
         _service.Changed += _ => RaiseAll();
@@ -126,6 +130,10 @@ public sealed class SettingsViewModel : ObservableObject
 
     public ObservableCollection<UnlockRow> UnlockRows { get; } = [];
 
+    public ObservableCollection<AchievementRow> AchievementRows { get; } = [];
+
+    public string AchievementSummary { get; private set; } = string.Empty;
+
     public ICommand OpenDataFolderCommand { get; }
 
     public ICommand OpenRepositoryCommand { get; }
@@ -133,6 +141,8 @@ public sealed class SettingsViewModel : ObservableObject
     public ICommand ResetProgressCommand { get; }
 
     public ICommand OfferMissionCommand { get; }
+
+    public ICommand StartRaceCommand { get; }
 
     public ICommand ToggleControlCommand { get; }
 
@@ -333,6 +343,28 @@ public sealed class SettingsViewModel : ObservableObject
         Stats.Add(new StatTile(progress.BestStreak.ToString("N0", CultureInfo.CurrentCulture), "Mejor racha"));
         Stats.Add(new StatTile(progress.MissionsCompleted.ToString("N0", CultureInfo.CurrentCulture), "Misiones completadas"));
         Stats.Add(new StatTile(progress.AutoLandings.ToString("N0", CultureInfo.CurrentCulture), "Aterrizajes en automático"));
+        Stats.Add(new StatTile(progress.CrystalsCollected.ToString("N0", CultureInfo.CurrentCulture), "Cristales recogidos"));
+        Stats.Add(new StatTile(progress.RacesCompleted.ToString("N0", CultureInfo.CurrentCulture), "Carreras terminadas"));
+        Stats.Add(new StatTile(progress.GoldMedals.ToString("N0", CultureInfo.CurrentCulture), "Medallas de oro"));
+
+        AchievementRows.Clear();
+        var earned = 0;
+        foreach (var achievement in Achievements.All)
+        {
+            var isEarned = achievement.IsEarned(progress);
+            earned += isEarned ? 1 : 0;
+            var current = Math.Min(achievement.Value(progress), achievement.Target);
+            var progressText = isEarned
+                ? "Conseguido"
+                : achievement.Id == "flight-hour"
+                    ? $"{FormatDuration(current)} de 1 h"
+                    : $"{Math.Floor(current).ToString("N0", CultureInfo.CurrentCulture)} de {achievement.Target.ToString("N0", CultureInfo.CurrentCulture)}";
+            AchievementRows.Add(new AchievementRow(achievement.Name, achievement.Description, progressText, achievement.ProgressOf(progress) * 100, isEarned));
+        }
+
+        Stats.Add(new StatTile($"{earned} de {Achievements.All.Count}", "Logros"));
+        AchievementSummary = $"{earned} de {Achievements.All.Count} conseguidos";
+        Raise(nameof(AchievementSummary));
 
         UnlockRows.Clear();
         foreach (var unlock in Unlocks.All.Where(u => u.Level > 1))

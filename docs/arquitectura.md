@@ -77,6 +77,18 @@ trampas.
 - **Missions** y **Progression**: misiones, puntuación, niveles, desbloqueos y mejoras. Un aterrizaje
   solo puntúa tras un vuelo de verdad (al menos 1,5 s y, si vuelve a la misma plataforma, habiendo
   subido), para que no se puedan granjear puntos tocando y despegando.
+- **Racing**: el modo carrera. `RaceSystem` traza un circuito de hasta cuatro ventanas (elegidas al azar,
+  con más probabilidad cuanto más lejos de la anterior, y solo si son anchas y tienen sitio por encima) que
+  termina en la base. El cronómetro arranca al despegar; cada baliza rellena el depósito, un aterrizaje
+  brusco suma 2 s y un accidente o volver al automático la pierden. El tiempo de referencia (medalla de
+  oro) sale de la longitud de cada tramo, con un ritmo distinto al subir, bajar y desplazarse, más un
+  margen fijo por aterrizaje. Los récords son por circuito (la secuencia de ventanas) y duran la sesión,
+  porque los identificadores de ventana no sobreviven a un reinicio. Mientras dura una carrera no hay
+  misiones.
+- **Achievements**: logros calculados a partir de las estadísticas, sin estado propio; el juego solo
+  recuerda cuáles ha anunciado ya en esta sesión.
+- **DemoPilot**: piloto simulado que pulsa las teclas del modo manual. Lo usan `--demo-manual`,
+  `--demo-race` y los tests de la carrera.
 - **Settings**: modelo de ajustes y almacenamiento JSON con escritura atómica (archivo temporal y
   reemplazo) y serialización generada en compilación.
 
@@ -216,6 +228,9 @@ escaneos y eventos por segundo.
   diez minutos de vida autónoma sin un solo accidente; recuperación al desaparecer la ventana; vuelta a
   la base con poco combustible; dormir y despertar; esquivar el cursor; salto con notificaciones; viaje a
   la papelera; lanzarlo con el ratón.
+- Modo carrera: reglas de balizas, penalizaciones, récords y medallas, y una carrera completa con el
+  piloto simulado, que debe terminar con plata (es prudente) para comprobar que el tiempo de referencia
+  es exigente pero alcanzable.
 - Durante el desarrollo se usó además una prueba de estrés (40 escritorios aleatorios con dos monitores
   de distinto DPI y ventanas que aparecen, se mueven y desaparecen) para afinar el piloto automático: 0
   accidentes en más de 600 aterrizajes.

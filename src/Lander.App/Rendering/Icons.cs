@@ -113,7 +113,64 @@ internal static class Icons
             case BubbleIcon.Trophy:
                 DrawTrophy(dc);
                 break;
+
+            case BubbleIcon.Flag:
+                DrawFlag(dc, ink, time);
+                break;
+
+            case BubbleIcon.MedalGold:
+                DrawMedal(dc, Gfx.Rgb(0xFFE07A), Gfx.Rgb(0xE0A100), Gfx.Rgb(0xA87400));
+                break;
+
+            case BubbleIcon.MedalSilver:
+                DrawMedal(dc, Gfx.Rgb(0xF1F5F9), Gfx.Rgb(0xA3AEBD), Gfx.Rgb(0x6B7685));
+                break;
+
+            case BubbleIcon.MedalBronze:
+                DrawMedal(dc, Gfx.Rgb(0xF2B37A), Gfx.Rgb(0xC0703A), Gfx.Rgb(0x83461E));
+                break;
         }
+    }
+
+    /// <summary>Bandera a cuadros que ondea un poco.</summary>
+    public static void DrawFlag(DrawingContext dc, Color pole, double time)
+    {
+        dc.DrawRoundedRectangle(Gfx.Brush(pole), null, new Rect(-5.6, -7, 1.4, 14), 0.7, 0.7);
+
+        const int columns = 4;
+        const int rows = 3;
+        const double left = -4.2;
+        const double top = -6.6;
+        const double cell = 2.6;
+        for (var column = 0; column < columns; column++)
+        {
+            // La tela se ondula: cada columna baja o sube un poco según la fase.
+            var wave = Math.Sin(time * 4 - column * 0.9) * 0.55 * (column / (double)columns);
+            for (var row = 0; row < rows; row++)
+            {
+                var dark = (row + column) % 2 == 0;
+                var rect = new Rect(left + column * cell, top + row * cell + wave, cell + 0.05, cell + 0.05);
+                dc.DrawRectangle(Gfx.Brush(dark ? Gfx.Rgb(0x1F2328) : Colors.White), null, rect);
+            }
+        }
+
+        dc.DrawRectangle(null, Gfx.Pen(Gfx.Rgb(0x1F2328), 0.5), new Rect(left, top, columns * cell, rows * cell));
+    }
+
+    private static void DrawMedal(DrawingContext dc, Color light, Color mid, Color edge)
+    {
+        // Cinta
+        dc.DrawGeometry(Gfx.Brush(0xE5484D), null, Gfx.Polygon(-4.6, -7.6, -1.4, -7.6, 1.2, -1.6, -2, -1.6));
+        dc.DrawGeometry(Gfx.Brush(0x3B82F6), null, Gfx.Polygon(4.6, -7.6, 1.4, -7.6, -1.2, -1.6, 2, -1.6));
+
+        // Disco
+        var center = new Point(0, 2.4);
+        dc.DrawEllipse(Gfx.Gradient(new Point(0.2, 0), new Point(0.8, 1), (0, light), (1, mid)), Gfx.Pen(edge, 0.7), center, 5.2, 5.2);
+        dc.DrawEllipse(null, Gfx.Pen(edge.WithAlpha(0.6), 0.5), center, 3.6, 3.6);
+        dc.PushTransform(new MatrixTransform(0.42, 0, 0, 0.42, center.X, center.Y));
+        dc.DrawGeometry(Gfx.Brush(edge.WithAlpha(0.75)), null, Star);
+        dc.Pop();
+        ParticleSystem.DrawSparkle(dc, new Point(-2.4, 0.2), 1.5, Colors.White.WithAlpha(0.85));
     }
 
     public static void DrawCrystal(DrawingContext dc, double alpha)
