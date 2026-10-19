@@ -29,7 +29,7 @@ internal sealed record EngineStatus(ControlMode Mode, bool Paused, int Level, bo
 /// el lander en su ventana por capas y reproduce los sonidos. Duerme casi del todo cuando el lander
 /// está quieto. Todo lo que llega de la interfaz pasa por <see cref="Post"/>.
 /// </summary>
-internal sealed unsafe class EngineHost : IDisposable
+internal sealed unsafe partial class EngineHost : IDisposable
 {
     private const double IdleInterval = 0.25;
     private const double AttentiveInterval = 1.0 / 20;
@@ -118,6 +118,7 @@ internal sealed unsafe class EngineHost : IDisposable
     private readonly Dictionary<string, int> _statSources = [];
     private long _statRenderTicks;
     private long _statScanTicks;
+    private long _statRecordTicks;
 
     public EngineHost(LanderSettings settings, PilotProgress progress, Dispatcher ui)
     {
@@ -152,6 +153,9 @@ internal sealed unsafe class EngineHost : IDisposable
 
     /// <summary>El piloto simulado corre una carrera tras otra (<c>--demo-race</c>).</summary>
     public bool DemoRace { get; init; }
+
+    /// <summary>Registra cada diez segundos ciclos, dibujos y tiempos (siempre en Debug; con <c>--stats</c> en Release).</summary>
+    public bool Statistics { get; init; }
 
     /// <summary>Progreso final, disponible tras <see cref="Stop"/>.</summary>
     public PilotProgress? FinalProgress { get; private set; }
@@ -289,6 +293,7 @@ internal sealed unsafe class EngineHost : IDisposable
         var now = Now;
         _lastTick = now;
         _monitors = MonitorService.GetMonitors();
+        InitializeGraphics();
         _system.Update(now, _monitors, _ownWindows);
         RebuildWorld(now);
 
@@ -328,32 +333,58 @@ internal sealed unsafe class EngineHost : IDisposable
             }
 
             var now = Now;
-            if (now >= nextTick)
+            var vsync = _vsyncFired;
+            _vsyncFired = false;
+
+            // Con algo moviéndose y render por GPU, un ciclo por cada fotograma del compositor (sin pasar del
+            // tope); si no, cuando toque según el ritmo que pida el propio ciclo.
+            if ((vsync && _smooth && now - _lastTick >= MinFrameInterval) || now >= nextTick)
             {
                 var interval = Tick(now);
-                nextTick = interval <= FrameInterval + 1e-6 ? nextTick + interval : now + interval;
-                if (nextTick <= now)
+                _smooth = UseVsync && interval <= FrameInterval + 1e-6;
+                SetVsync(_smooth);
+                if (_smooth)
                 {
-                    nextTick = now + interval * 0.5;
+                    // Red de seguridad por si el reloj del compositor dejara de llegar.
+                    nextTick = now + 0.1;
+                }
+                else
+                {
+                    nextTick = interval <= FrameInterval + 1e-6 ? nextTick + interval : now + interval;
+                    if (nextTick <= now)
+                    {
+                        nextTick = now + interval * 0.5;
+                    }
                 }
             }
 
             var wait = nextTick - Now;
-            if (wait > 0.0005)
+            if (_smooth || wait > 0.0005)
             {
-                Wait(wait);
+                Wait(Math.Max(wait, 0.0005), _smooth);
             }
         }
     }
 
-    private void Wait(double seconds)
+    private void Wait(double seconds, bool vsync)
     {
         var due = -(long)(seconds * 10_000_000);
         Native.SetWaitableTimer(_timer, due, 0, 0, 0, false);
-        var handles = stackalloc nint[2];
+        var handles = stackalloc nint[3];
         handles[0] = _timer;
         handles[1] = _wake.SafeWaitHandle.DangerousGetHandle();
-        _ = Native.MsgWaitForMultipleObjectsEx(2, handles, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        var count = 2u;
+        if (vsync && _vsync is not null)
+        {
+            handles[2] = _vsync.Handle;
+            count = 3;
+        }
+
+        var result = Native.MsgWaitForMultipleObjectsEx(count, handles, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        if (count == 3 && result == 2)
+        {
+            _vsyncFired = true;
+        }
     }
 
     private static void PumpMessages()
@@ -393,6 +424,7 @@ internal sealed unsafe class EngineHost : IDisposable
         {
             _monitorsDirty = false;
             _monitors = MonitorService.GetMonitors();
+            OnMonitorsChanged();
             _terrainDirty = true;
             _forceRender = true;
         }
@@ -434,15 +466,20 @@ internal sealed unsafe class EngineHost : IDisposable
         if (now >= _nextTopmost)
         {
             _nextTopmost = now + 5;
-            _window.BringToTop();
+            BringLanderToTop();
         }
 
-        if (IsUserAway() && _game.Body.IsLanded && !_game.Autopilot.IsFlightActive)
+        var interval = IsUserAway() && _game.Body.IsLanded && !_game.Autopilot.IsFlightActive
+            ? AwayInterval
+            : IsActive(now) ? FrameInterval : IsAttentive() ? AttentiveInterval : IdleInterval;
+
+        // En reposo se despierta justo cuando parpadea, ni antes ni después.
+        if (interval > FrameInterval && _game.Visual.Expression != Core.Game.Expression.Asleep && _game.Body.State != BodyState.Destroyed)
         {
-            return AwayInterval;
+            interval = Math.Clamp(NextBlinkEdge(now) + 0.002 - now, 0.002, interval);
         }
 
-        return IsActive(now) ? FrameInterval : IsAttentive() ? AttentiveInterval : IdleInterval;
+        return interval;
     }
 
     /// <summary>Nadie mira: el usuario lleva un rato sin tocar nada y no está pilotando.</summary>
@@ -450,7 +487,7 @@ internal sealed unsafe class EngineHost : IDisposable
         _sensors.UserIdleSeconds > 60 && _game.Mode == ControlMode.Auto && !_pressed && !_dragging;
 
     private bool IsActive(double now) =>
-        _game.Mode == ControlMode.Manual || _game.NeedsHighFrequency || _particles.Count > 0
+        _game.Mode == ControlMode.Manual || _game.NeedsHighFrequency || _particles.Count > 0 || AntennaMoving
         || _pressed || _dragging || now < _burstUntil || _markers.HasVisible;
 
     private bool IsAttentive() =>
@@ -550,6 +587,7 @@ internal sealed unsafe class EngineHost : IDisposable
         }
 
         _sensors.UserIdleSeconds = DemoMode ? 0 : SystemStatus.UserIdleSeconds();
+        _sensors.LocalTime = DateTime.Now;
         _sensors.BatteryLow = _system.BatteryLow;
         _sensors.PowerSaver = _system.PowerSaver;
         _sensors.DarkMode = _system.DarkMode;
@@ -585,7 +623,7 @@ internal sealed unsafe class EngineHost : IDisposable
                 EndPress();
                 _game.SnapToSurface();
                 DrainGameEvents();
-                _window.Hide();
+                HideLander();
                 _markers.HideAll();
                 _particles.Clear();
                 _hotkeys.SetGameKeys(false);
@@ -607,34 +645,49 @@ internal sealed unsafe class EngineHost : IDisposable
         return false;
     }
 
-    [Conditional("DEBUG")]
     private void CountEventSource(uint eventType, nint hwnd)
     {
+        if (!Statistics)
+        {
+            return;
+        }
+
         var key = $"0x{eventType:X4} {WindowScanner.GetClassName(hwnd)} «{WindowScanner.GetTitle(hwnd)}»";
         _statSources[key] = _statSources.GetValueOrDefault(key) + 1;
     }
 
-    [Conditional("DEBUG")]
     private void LogStats(double now)
     {
-        if (now < _nextStatLog)
+        if (!Statistics || now < _nextStatLog)
         {
             return;
         }
 
         var span = 10.0;
-        Log.Debug($"Motor (10 s): {_statTicks / span:0.#} ciclos/s, {_statRenders / span:0.#} dibujos/s, {_statScans / span:0.#} escaneos/s, {_statEvents / span:0.#} eventos/s, autopiloto {_game?.Autopilot.State}.");
-        Log.Debug($"   eventos en bruto: {WinEventWatcher.RawCount / span:0} /s");
+        Log.Stats($"Motor (10 s): {_statTicks / span:0.#} ciclos/s, {_statRenders / span:0.#} dibujos/s, {_statScans / span:0.#} escaneos/s, {_statEvents / span:0.#} eventos/s, autopiloto {_game?.Autopilot.State}.");
+        Log.Stats($"   eventos en bruto: {WinEventWatcher.RawCount / span:0} /s");
         WinEventWatcher.RawCount = 0;
         if (_statRenders > 0 || _statScans > 0)
         {
-            Log.Debug($"   dibujo medio {Stopwatch.GetElapsedTime(0, _statRenderTicks).TotalMilliseconds / Math.Max(1, _statRenders):0.00} ms, escaneo medio {Stopwatch.GetElapsedTime(0, _statScanTicks).TotalMilliseconds / Math.Max(1, _statScans):0.00} ms");
+            Log.Stats($"   dibujo medio {Stopwatch.GetElapsedTime(0, _statRenderTicks).TotalMilliseconds / Math.Max(1, _statRenders):0.00} ms, escaneo medio {Stopwatch.GetElapsedTime(0, _statScanTicks).TotalMilliseconds / Math.Max(1, _statScans):0.00} ms");
         }
 
-        _statRenderTicks = _statScanTicks = 0;
+        if (_overlay is { } overlay && _statRenders > 0)
+        {
+            static double Ms(long ticks, int count) => Stopwatch.GetElapsedTime(0, ticks).TotalMilliseconds / Math.Max(1, count);
+            Log.Stats($"   GPU: grabar {Ms(_statRecordTicks, _statRenders):0.00} ms, abrir {Ms(overlay.BeginTicks, _statRenders):0.00} ms, dibujar {Ms(overlay.DrawTicks, _statRenders):0.00} ms, cerrar {Ms(overlay.EndDrawTicks, _statRenders):0.00} ms, componer {Ms(overlay.CommitTicks, _statRenders):0.00} ms, {(_replayer?.Primitives ?? 0) / Math.Max(1, _statRenders)} primitivas");
+            overlay.BeginTicks = 0;
+            if (_replayer is not null)
+            {
+                _replayer.Primitives = 0;
+            }
+            overlay.DrawTicks = overlay.EndDrawTicks = overlay.CommitTicks = 0;
+        }
+
+        _statRenderTicks = _statScanTicks = _statRecordTicks = 0;
         foreach (var (source, count) in _statSources.OrderByDescending(p => p.Value).Take(3))
         {
-            Log.Debug($"   {count} × {source}");
+            Log.Stats($"   {count} × {source}");
         }
 
         _statSources.Clear();
@@ -685,6 +738,17 @@ internal sealed unsafe class EngineHost : IDisposable
             _particles.DamageWisp(body.Position, body.Damage, scale, elapsed);
         }
 
+        // Bocanadas de los propulsores de giro y traslación: salen hacia fuera de cada uno.
+        if (body.State != BodyState.Destroyed)
+        {
+            var side = Vec2.UpFromAngle(body.Angle + Math.PI / 2);
+            EmitRcs(0, _skin.LeftJetPoint, -side, visual.LeftJet, elapsed);
+            EmitRcs(1, _skin.RightJetPoint, side, visual.RightJet, elapsed);
+            EmitRcs(2, _skin.LowerLeftJetPoint, -side, visual.LowerLeftJet, elapsed);
+            EmitRcs(3, _skin.LowerRightJetPoint, side, visual.LowerRightJet, elapsed);
+        }
+
+        UpdateAntenna(body, elapsed);
         _particles.Update(elapsed);
 
         var engineLevel = !_sensors.QuietMode && body.State != BodyState.Destroyed ? visual.MainFlame : 0;
@@ -707,6 +771,7 @@ internal sealed unsafe class EngineHost : IDisposable
                 var landing = gameEvent.Landing!;
                 var intensity = Math.Clamp(landing.VerticalSpeed / (170 * scale), 0, 1);
                 _particles.DustBurst(feet, 0.25 + intensity, scale);
+                _particles.Ring(feet, scale, 0.2 + intensity);
                 if (landing.Quality == LandingQuality.Hard)
                 {
                     _particles.Sparks(feet, new Vec2(0, -1), 10, scale);
@@ -833,6 +898,33 @@ internal sealed unsafe class EngineHost : IDisposable
                 PublishStatus();
                 break;
 
+            case GameEventKind.Flipped:
+                _particles.Sparkles(position, 28 * scale, Gfx.Rgb(0xFFE08A), 12, scale);
+                Play(Sound.Crystal, 0.6);
+                break;
+
+            case GameEventKind.EngineCut:
+                Play(Sound.Puff, 0.5);
+                break;
+
+            case GameEventKind.Ignition:
+                Play(Sound.Boost, 0.8);
+                break;
+
+            case GameEventKind.Petted:
+                _particles.Hearts(position - new Vec2(0, 22 * scale), scale);
+                Play(Sound.PerfectChime, 0.45);
+                break;
+
+            case GameEventKind.Greeted:
+                Play(Sound.Pop, 0.6);
+                break;
+
+            case GameEventKind.HourChime:
+                _particles.Confetti(position - new Vec2(0, 20 * scale), scale, 30);
+                Play(Sound.PerfectChime, 0.8);
+                break;
+
             case GameEventKind.AchievementUnlocked:
                 var achievement = gameEvent.Achievement!;
                 Play(Sound.PerfectChime, 0.8);
@@ -856,7 +948,7 @@ internal sealed unsafe class EngineHost : IDisposable
     {
         var body = _game.Body;
         var over = false;
-        if (_sensors.Cursor is { } cursor && body.State != BodyState.Destroyed && _window.IsVisible)
+        if (_sensors.Cursor is { } cursor && body.State != BodyState.Destroyed && LanderVisible)
         {
             var local = Rotate(cursor - body.Position, -body.Angle);
             over = Math.Abs(local.X) < body.HalfWidth * 1.1 && local.Y > -body.HalfHeight && local.Y < body.HalfHeight;
@@ -872,6 +964,7 @@ internal sealed unsafe class EngineHost : IDisposable
 
         var near = _sensors.Cursor is { } c && Vec2.Distance(c, body.Position) < body.Height * 6;
         SetRawInput(near && !_hidden);
+        UpdateHitTarget(_sensors.Cursor is { } pointer && Vec2.Distance(pointer, body.Position) < body.Height * 3);
     }
 
     private void EndPress()
@@ -1155,6 +1248,12 @@ internal sealed unsafe class EngineHost : IDisposable
             case EVENT_SYSTEM_FOREGROUND:
                 _system.InvalidateFullscreen();
                 _desktopCheck = true;
+                if (isTerrain)
+                {
+                    _game.Notify(new WindowActivated(hwnd));
+                    DrainGameEvents();
+                }
+
                 break;
 
             default:
@@ -1241,96 +1340,6 @@ internal sealed unsafe class EngineHost : IDisposable
             _game.Notify(new RecycleBinEmptied(target));
             DrainGameEvents();
         }
-    }
-
-    // Dibujo -----------------------------------------------------------------------------------------
-
-    private void Render(double now)
-    {
-        var body = _game.Body;
-        var visual = _game.Visual;
-        var alpha = Math.Clamp(_accumulator / LanderGame.TimeStep, 0, 1);
-        var position = body.State == BodyState.Held || body.IsLanded
-            ? body.Position
-            : Vec2.Lerp(_previousPosition, body.Position, alpha);
-        var angle = _previousAngle + MathUtil.WrapAngle(body.Angle - _previousAngle) * alpha;
-
-        var size = Math.Max(120, (int)Math.Ceiling(WindowSizeFactor * body.Height / 2) * 2);
-        var x = (int)Math.Round(position.X) - size / 2;
-        var y = (int)Math.Round(position.Y) - size / 2;
-
-        // En reposo, el tiempo de las animaciones avanza a saltos para no redibujar sin necesidad.
-        var lively = IsActive(now);
-        var away = IsUserAway() && body.IsLanded;
-        var animationTime = away ? Math.Floor(now) : lively ? now : Math.Floor(now * 4) / 4;
-        var bubbleAge = away ? Math.Floor(visual.BubbleAge * 2) / 2 : lively || visual.IsAnimating ? visual.BubbleAge : Math.Floor(visual.BubbleAge * 4) / 4;
-        var blink = BlinkAt(now);
-
-        _scene.Position = position;
-        _scene.Angle = angle;
-        _scene.Scale = body.Scale;
-        _scene.Visible = body.State != BodyState.Destroyed;
-        _scene.Opacity = visual.Opacity;
-        _scene.Skin = _skin;
-        _scene.Dark = _sensors.DarkMode;
-        _scene.Time = animationTime;
-        _scene.TopLimit = (_world.MonitorAt(position) ?? _world.NearestMonitor(position))?.Bounds.Top ?? double.MinValue;
-        _scene.Pose = new LanderPose
-        {
-            LegsDeploy = body.LegsDeploy,
-            Expression = visual.Expression,
-            Look = visual.Look,
-            Blink = blink,
-            Night = _sensors.DarkMode,
-            Time = animationTime,
-            Damage = body.Damage,
-            MainFlame = visual.MainFlame,
-            LeftJet = visual.LeftJet,
-            RightJet = visual.RightJet,
-            BoostFlash = visual.BoostFlash,
-            CarryingPackage = visual.CarryingPackage,
-        };
-        _scene.Bubble = visual.Bubble;
-        _scene.BubbleAge = bubbleAge;
-        _scene.BubbleIcon = visual.Bubble is { Icon: BubbleIcon.App } bubble ? _icons.Get(bubble.AppHandle) : null;
-        _scene.ShowHud = visual.ShowHud;
-        _scene.Fuel = body.FuelFraction;
-        _scene.Damage = body.Damage;
-        _scene.Mission = _game.Missions.Current;
-        _scene.MissionIcon = _scene.Mission is { Kind: MissionKind.LandOnApp } mission ? _icons.Get(mission.AppHandle) : null;
-        _scene.Popups = visual.Popups;
-        var race = _game.Races.Current;
-        _scene.Race = race;
-        var raceSignature = race is null ? 0 : HashCode.Combine(race.Status, race.Next, race.Medal, (int)(race.Elapsed * 10), (int)(race.ResultAge * 4));
-
-        var signature = HashCode.Combine(
-            raceSignature,
-            HashCode.Combine(x, y, size, (int)(angle * 300), (int)(body.LegsDeploy * 40), visual.Expression, (int)(visual.Look.X * 20), (int)(visual.Look.Y * 20)),
-            HashCode.Combine(blink > 0.5, (int)(visual.MainFlame * 50), (int)(visual.Opacity * 40), visual.Bubble, (int)(bubbleAge * 30), visual.Popups.Count, (int)(body.FuelFraction * 60)),
-            HashCode.Combine(_sensors.DarkMode ? (int)(animationTime * 4) : 0, visual.ShowHud, _skin, body.State, (int)(body.Damage * 20), _scene.Mission?.Status, (int)((_scene.Mission?.TimeLeft ?? 0) * 2)));
-
-        if (!_forceRender && signature == _lastSignature && _particles.Count == 0 && (away || !visual.IsAnimating))
-        {
-            return;
-        }
-
-        _forceRender = false;
-        _lastSignature = signature;
-        var window = new Rect(x, y, size, size);
-        _statRenders++;
-        var renderStart = Stopwatch.GetTimestamp();
-        _presenter.Present(_window, x, y, size, size, dc => SceneRenderer.Draw(dc, _scene, _particles, window));
-        _statRenderTicks += Stopwatch.GetTimestamp() - renderStart;
-    }
-
-    /// <summary>Parpadeo: unas 13 veces por minuto, a intervalos irregulares.</summary>
-    private static double BlinkAt(double time)
-    {
-        const double period = 4.6;
-        var cycle = Math.Floor(time / period);
-        var offset = (Math.Sin(cycle * 12.9898) * 43758.5453 % 1 + 1) % 1 * 2.5;
-        var phase = time - cycle * period - offset;
-        return phase is >= 0 and < 0.16 ? 1 : 0;
     }
 
     private void UpdateMarkers(double now)
@@ -1518,6 +1527,7 @@ internal sealed unsafe class EngineHost : IDisposable
             _desktops?.Dispose();
             _audio?.Dispose();
             _markers?.Dispose();
+            DisposeGraphics();
             _window?.Dispose();
             if (_timer != 0)
             {

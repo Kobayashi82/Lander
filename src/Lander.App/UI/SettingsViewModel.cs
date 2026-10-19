@@ -256,30 +256,23 @@ public sealed class SettingsViewModel : ObservableObject
         set => _service.Update(s => s.MissionFrequency = (MissionFrequency)value);
     }
 
-    // Pilotaje ------------------------------------------------------------------------------------
+    /// <summary>Niveles de despiste del piloto automático que ofrece la lista (ninguno, pocos, normales, muchos).</summary>
+    private static readonly double[] PilotErrorLevels = [0, 0.25, 0.5, 1];
 
-    public bool IsAssisted
+    public int PilotErrors
     {
-        get => S.PilotMode == PilotMode.Assisted;
-        set
+        get
         {
-            if (value)
-            {
-                _service.Update(s => s.PilotMode = PilotMode.Assisted);
-            }
+            var value = S.PilotErrors;
+            return Array.IndexOf(PilotErrorLevels, PilotErrorLevels.MinBy(level => Math.Abs(level - value)));
         }
+        set => _service.Update(s => s.PilotErrors = PilotErrorLevels[Math.Clamp(value, 0, PilotErrorLevels.Length - 1)]);
     }
 
-    public bool IsClassic
+    public bool VisitClock
     {
-        get => S.PilotMode == PilotMode.Classic;
-        set
-        {
-            if (value)
-            {
-                _service.Update(s => s.PilotMode = PilotMode.Classic);
-            }
-        }
+        get => S.VisitClock;
+        set => _service.Update(s => s.VisitClock = value);
     }
 
     // Sonido --------------------------------------------------------------------------------------

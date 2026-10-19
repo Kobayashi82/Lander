@@ -60,6 +60,13 @@ internal static class EyeRenderer
                 break;
         }
 
+        // Bostezo: los párpados casi se juntan y luego se vuelven a abrir despacio.
+        if (pose.Yawn > 0.01)
+        {
+            closed = Math.Max(closed, Math.Clamp(pose.Yawn, 0, 1) * 0.85);
+            bottomLid = Math.Max(bottomLid, Math.Clamp(pose.Yawn, 0, 1) * 0.3);
+        }
+
         var lidBrush = Gfx.Brush(lid);
         if (closed > 0)
         {

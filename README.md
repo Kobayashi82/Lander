@@ -42,11 +42,21 @@ el control: se convierte en un minijuego de *Lunar Lander* sobre tu propio escri
   según lo tímido que lo configures).
 - Reacciona a Windows: da un salto con las notificaciones, vuelve a la base a dormir si no usas el PC,
   va a recargar con la batería baja y celebra cuando vacías la papelera (vuela hasta su icono).
+- Vuela de muchas formas: crucero, rasante, perezoso (baja balanceándose como una hoja), en arco,
+  vuelos panorámicos por todo el monitor y, a veces, sube, apaga el motor, cae en caída libre y frena
+  en el último instante (*suicide burn*). De vez en cuando, una voltereta.
+- Calcula el combustible de cada vuelo: no sale si no le llega para volver a la base, se desvía o
+  aterriza antes de quedarse seco, y nunca choca con el borde superior de la pantalla.
+- En reposo pasea por la barra de título, se asoma al borde y se tira, bosteza, se estira, echa siestas,
+  te saluda al volver, se deja acariciar con el cursor, acompaña a la ventana que activas y visita el
+  reloj de la barra de tareas a las horas en punto.
+- Despistes opcionales: a veces calcula mal la frenada o llega torcido (aterrizaje duro y, muy de vez en
+  cuando, un accidente). Se ajusta en **Ajustes → Comportamiento**.
 
 **Modo manual**
 - Física honesta: gravedad, inercia, resistencia y combustible.
-- Dos modos de pilotaje: **asistido** (las flechas desplazan sin girar) y **clásico** (giras y empujas,
-  como el original).
+- Un único esquema de control como una nave de verdad: motor principal, propulsores de giro (← →) y de
+  traslación (A D), y patas que se sacan y recogen (G). Todos los propulsores se ven encenderse.
 - Aterrizajes perfectos, duros o accidentes; puntos según la dificultad de la plataforma, rachas,
   niveles de piloto, mejoras y aspectos desbloqueables.
 - Misiones cortas: posarse sobre una aplicación concreta, recoger cristales, ida y vuelta sin repostar o
@@ -69,7 +79,8 @@ el control: se convierte en un minijuego de *Lunar Lander* sobre tu propio escri
   Alt+Tab o en la barra de tareas.
 - Con un vídeo, un juego o una presentación a pantalla completa se muda a otro monitor libre o se
   esconde. Con «No molestar», se queda quieto y en silencio.
-- Muy ligero: en reposo consume en torno al **0,05 % de un núcleo** de CPU.
+- Dibujado por GPU (Direct2D + DirectComposition) al ritmo del monitor, con animaciones suaves a 60,
+  144 Hz o lo que dé tu pantalla. En reposo consume en torno al **0,05 % de un núcleo** de CPU.
 - Sonido desactivado por defecto; sonidos cortos y a volumen bajo.
 
 <p align="center">
@@ -81,11 +92,15 @@ el control: se convierte en un minijuego de *Lunar Lander* sobre tu propio escri
 | Tecla | Acción |
 | --- | --- |
 | **Ctrl+Alt+L** | Tomar o devolver el control (configurable) |
-| ↑ | Motor principal |
-| ← → | Propulsores laterales: girar (clásico) o desplazarse (asistido) |
-| ↓ | Sacar las patas y estabilizar |
+| ↑ | Motor principal (empuja hacia donde apunta la nave) |
+| ← → | Girar con los propulsores de giro; al soltar mantienen la inclinación |
+| A D | Desplazarse a un lado con los propulsores de traslación, sin girar |
+| ↓ | Enderezar la nave |
+| G | Sacar o recoger las patas |
 | Espacio | Impulso de emergencia (gasta mucho combustible) |
 | Esc | Soltar el control |
+
+Todos los propulsores se ven encenderse. Sin combustible no hay motor: el lander cae.
 
 Mientras pilotas, solo se capturan esas teclas: nunca escribes por accidente en otra ventana. Si pasan
 30 segundos sin tocar nada, el lander vuelve a volar solo.
@@ -137,6 +152,8 @@ GitHub Actions compila, prueba y publica una versión con ambos ejecutables.
 | `--demo` | Modo demostración: simula a alguien delante del PC y vuela mucho más a menudo. No guarda el progreso. |
 | `--demo-manual` | Como `--demo`, pero pilotando en modo manual con un piloto simulado (sin capturar el teclado). |
 | `--demo-race` | Como `--demo-manual`, pero corriendo una carrera tras otra (necesita al menos dos ventanas a la vista). |
+| `--software` | Dibuja por CPU en lugar de por GPU (para comparar o si un controlador da problemas). |
+| `--stats` | Registra cada diez segundos ciclos, fotogramas y tiempos de dibujo. |
 | `--preview archivo.png` | Dibuja todos los aspectos, expresiones, bocadillos y el HUD en una imagen. |
 | `--preview-hero archivo.png` | Genera la imagen de portada de este README. |
 | `--preview-settings carpeta` | Guarda cada página de los ajustes como imagen, sin mostrarlos. |

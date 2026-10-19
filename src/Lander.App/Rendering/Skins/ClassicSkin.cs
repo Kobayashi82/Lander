@@ -43,8 +43,10 @@ internal sealed class ClassicSkin : LanderSkin
         dc.DrawLine(PanelLine, new Point(-12.3, -8), new Point(12.3, -8));
         LanderParts.Scorch(dc, pose.Damage - 0.15, new Point(7.5, -10));
 
+        dc.PushTransform(new RotateTransform(pose.AntennaSway * 180 / Math.PI, 5.5, -21.6));
         dc.DrawLine(AntennaPen, new Point(5.5, -21.6), new Point(8.5, -27));
         dc.DrawEllipse(Gfx.Brush(0xD9DEE5), Gfx.Pen(0x6B7280, 0.5), new Point(8.8, -27.4), 1.8, 1.05);
+        dc.Pop();
 
         EyeRenderer.Draw(dc, Visor, pose, Glass, Gfx.Rgb(0x7DE3FF), Gfx.Rgb(0xE6EAF0), Gfx.Pen(0x1F2937, 0.7, 200));
         LanderParts.SweatDrop(dc, new Point(11.5, -20), pose);

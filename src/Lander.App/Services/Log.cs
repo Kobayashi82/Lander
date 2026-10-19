@@ -21,6 +21,9 @@ internal static class Log
 
     public static void Error(string message, Exception? exception = null) => Write("ERROR", message, exception);
 
+    /// <summary>Estadísticas del motor (también en Release con <c>--stats</c>).</summary>
+    public static void Stats(string message) => Write("STATS", message, null);
+
     [System.Diagnostics.Conditional("DEBUG")]
     public static void Debug(string message) => Write("DEBUG", message, null);
 

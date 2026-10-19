@@ -31,7 +31,7 @@ internal sealed class ApolloSkin : LanderSkin
     public override Color[] DebrisColors { get; } = [Gfx.Rgb(0xE8A93A), Gfx.Rgb(0xB9BEC4), Gfx.Rgb(0x2A2E34)];
 
     protected override void DrawLegs(DrawingContext dc, in LanderPose pose) =>
-        LanderParts.Legs(dc, pose.LegsDeploy, Gfx.Rgb(0xE0B04A), Gfx.Rgb(0xA87A2A), Gfx.Rgb(0xC9CDD2), hipX: 11, hipY: 3);
+        LanderParts.Legs(dc, pose.LegsDeploy, Gfx.Rgb(0xE0B04A), Gfx.Rgb(0xA87A2A), Gfx.Rgb(0xC9CDD2), hipX: 11, hipY: 3, compress: pose.Compress);
 
     protected override void DrawBody(DrawingContext dc, in LanderPose pose)
     {
@@ -64,8 +64,10 @@ internal sealed class ApolloSkin : LanderSkin
 
         // Escotilla de acoplamiento y antena parabólica.
         dc.DrawRectangle(Gfx.Brush(0x3A3F46), Outline, new Rect(-3, -23.5, 5, 2.4));
+        dc.PushTransform(new RotateTransform(pose.AntennaSway * 120 / Math.PI, 9, -17.5));
         dc.DrawLine(Gfx.Pen(0x6B7280, 0.8), new Point(9, -17.5), new Point(12.5, -23));
         dc.DrawEllipse(Gfx.Brush(0xE5E7EB), Gfx.Pen(0x4B5563, 0.6), new Point(12.8, -24.2), 3, 1.4);
+        dc.Pop();
 
         EyeRenderer.Draw(dc, Visor, pose, Glass, Gfx.Rgb(0xFFC857), Gfx.Rgb(0xB9BEC4), Gfx.Pen(0x111318, 0.8));
         LanderParts.SweatDrop(dc, new Point(-12, -18), pose);

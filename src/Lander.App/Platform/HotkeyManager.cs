@@ -9,7 +9,7 @@ namespace Lander.App.Platform;
 
 /// <summary>
 /// Atajo global para tomar el control (RegisterHotKey, no un hook de teclado). En modo manual registra
-/// también las flechas, Espacio y Esc: así esas teclas no llegan a otras ventanas y nunca se escribe
+/// también las flechas, Espacio, Esc, A, D y G: así esas teclas no llegan a otras ventanas y nunca se escribe
 /// por accidente; el resto del teclado sigue funcionando con normalidad.
 /// </summary>
 internal sealed class HotkeyManager(nint hwnd) : IDisposable
@@ -17,9 +17,14 @@ internal sealed class HotkeyManager(nint hwnd) : IDisposable
     public const int ToggleId = 1;
     public const int EscapeId = 15;
 
+    private const int KeyA = 0x41;
+    private const int KeyD = 0x44;
+    private const int KeyG = 0x47;
+
     private static readonly (int Id, int Key)[] GameKeys =
     [
         (10, VK_UP), (11, VK_DOWN), (12, VK_LEFT), (13, VK_RIGHT), (14, VK_SPACE), (EscapeId, VK_ESCAPE),
+        (16, KeyA), (17, KeyD), (18, KeyG),
     ];
 
     private bool _toggleRegistered;
@@ -76,7 +81,8 @@ internal sealed class HotkeyManager(nint hwnd) : IDisposable
 
     /// <summary>Teclas del juego pulsadas ahora mismo (estado físico, aunque estén registradas).</summary>
     public static ManualControls ReadControls() => new(
-        IsDown(VK_UP), IsDown(VK_DOWN), IsDown(VK_LEFT), IsDown(VK_RIGHT), IsDown(VK_SPACE));
+        IsDown(VK_UP), IsDown(VK_DOWN), IsDown(VK_LEFT), IsDown(VK_RIGHT), IsDown(VK_SPACE),
+        SlideLeft: IsDown(KeyA), SlideRight: IsDown(KeyD), Legs: IsDown(KeyG));
 
     public void Dispose()
     {

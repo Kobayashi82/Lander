@@ -111,6 +111,25 @@ internal sealed unsafe class LayeredWindow : IDisposable
         }
     }
 
+    /// <summary>
+    /// Muestra una máscara invisible (alfa 1/255) que solo cubre la forma indicada: la ventana recibe los
+    /// clics justo ahí y deja pasar el resto. Se usa cuando el lander se dibuja por GPU en otra capa.
+    /// </summary>
+    public void PresentMask(int x, int y, int width, int height, Func<int, int, bool> inside)
+    {
+        EnsureBuffer(width, height);
+        var pixels = (uint*)Bits;
+        for (var row = 0; row < height; row++)
+        {
+            for (var column = 0; column < width; column++)
+            {
+                pixels[row * width + column] = inside(column, row) ? 0x01000000u : 0;
+            }
+        }
+
+        Present(x, y);
+    }
+
     public void Hide()
     {
         if (_visible)

@@ -313,7 +313,7 @@ public sealed partial class Autopilot
     private bool TryIdleTrip(AutopilotContext ctx)
     {
         var body = ctx.Body;
-        if (!_hasFlown || !CanExplore(ctx) || body.Support is not { } support)
+        if (!CanExplore(ctx) || body.Support is not { } support)
         {
             _pendingDrop = null;
             return false;
@@ -364,6 +364,83 @@ public sealed partial class Autopilot
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Vuelo panorámico: sube, recorre el monitor pasando por varios puntos en el aire y se posa en otro
+    /// punto del suelo. Es lo que hace cuando no hay ventanas a las que ir (o, a veces, por gusto).
+    /// </summary>
+    private bool TrySightsee(AutopilotContext ctx)
+    {
+        var body = ctx.Body;
+        var world = ctx.World;
+        if (!CanExplore(ctx) || body.FuelFraction < 0.5 || body.Damage > 0.4
+            || (world.MonitorAt(body.Position) ?? world.NearestMonitor(body.Position)) is not { } monitor
+            || ctx.Sensors.FullscreenMonitors.Contains(monitor.Index) || world.GroundOf(monitor.Index) is not { } ground)
+        {
+            return false;
+        }
+
+        var height = body.Height;
+        var area = monitor.WorkArea.IsEmpty ? monitor.Bounds : monitor.WorkArea;
+        var margin = height * 1.6;
+        var top = FlightEnvelope.HighestCenter(world, body, new Vec2(area.Center.X, area.Top + height), 0.6);
+        var bottom = ground.Y - height * 3;
+        if (double.IsNegativeInfinity(top) || bottom - top < height * 2 || area.Width < height * 10)
+        {
+            return false;
+        }
+
+        // Destino: otro punto del suelo, bien lejos de donde está.
+        var landingMargin = DestinationPicker.LandingMargin(body) + height * 0.4;
+        double? landX = null;
+        for (var i = 0; i < 6 && landX is null; i++)
+        {
+            var x = random.Range(ground.Left + landingMargin, ground.Right - landingMargin);
+            if (Math.Abs(x - body.Position.X) > Math.Max(height * 6, ground.Width * 0.25))
+            {
+                landX = x;
+            }
+        }
+
+        if (landX is not { } destinationX || Destination.On(ground, destinationX) is not { } destination || !IsReachable(ctx, destination))
+        {
+            return false;
+        }
+
+        // Dos a cuatro puntos en zigzag por el monitor, a distintas alturas.
+        _plannedTour.Clear();
+        var count = 2 + random.Next(3);
+        var lastX = body.Position.X;
+        var length = 0.0;
+        var last = body.Position;
+        for (var i = 0; i < count; i++)
+        {
+            var x = lastX;
+            for (var attempt = 0; attempt < 6 && Math.Abs(x - lastX) < area.Width * 0.22; attempt++)
+            {
+                x = random.Range(area.Left + margin, area.Right - margin);
+            }
+
+            var point = new Vec2(x, random.Range(top, MathUtil.Lerp(top, bottom, 0.75)));
+            length += Vec2.Distance(point, last);
+            _plannedTour.Add(point);
+            last = point;
+            lastX = x;
+        }
+
+        // Combustible para todo el recorrido y para volver a la base después.
+        var target = new Vec2(destinationX, ground.Y - body.HalfHeight);
+        var seconds = 8 + (length + Vec2.Distance(last, target)) / (140 * body.Scale);
+        var needed = seconds * FuelPlanner.HoverBurn(body, ctx.Physics) * 1.3;
+        if (body.Fuel - needed < FuelPlanner.Reserve(body) * 2)
+        {
+            _plannedTour.Clear();
+            return false;
+        }
+
+        BeginChoosing(ctx, destination, FlightPurpose.Sightsee, BubbleIcon.Star, _plannedTour[0]);
+        return true;
     }
 
     /// <summary>Busca un borde de la plataforma con caída libre de sobra hasta algo donde posarse.</summary>

@@ -104,11 +104,23 @@ public sealed class LanderVisual
     /// <summary>Intensidad visual del motor principal (0–1).</summary>
     public double MainFlame { get; private set; }
 
-    /// <summary>Propulsor del lado izquierdo, que empuja hacia la derecha (0–1).</summary>
+    /// <summary>Propulsor superior izquierdo, que empuja hacia la derecha (0–1).</summary>
     public double LeftJet { get; private set; }
 
-    /// <summary>Propulsor del lado derecho, que empuja hacia la izquierda (0–1).</summary>
+    /// <summary>Propulsor superior derecho, que empuja hacia la izquierda (0–1).</summary>
     public double RightJet { get; private set; }
+
+    /// <summary>Propulsor inferior izquierdo, que empuja hacia la derecha (0–1).</summary>
+    public double LowerLeftJet { get; private set; }
+
+    /// <summary>Propulsor inferior derecho, que empuja hacia la izquierda (0–1).</summary>
+    public double LowerRightJet { get; private set; }
+
+    private static double Jet(double current, double target, double dt)
+    {
+        var value = MathUtil.Damp(current, Math.Min(1, target), 20, dt);
+        return value < 0.005 ? 0 : value;
+    }
 
     public double BoostFlash { get; set; }
 
@@ -150,7 +162,8 @@ public sealed class LanderVisual
 
     /// <summary>Hay animaciones en curso que requieren refrescar a menudo.</summary>
     public bool IsAnimating =>
-        MainFlame > 0.01 || LeftJet > 0.01 || RightJet > 0.01 || BoostFlash > 0 || CelebrateTime > 0
+        MainFlame > 0.01 || LeftJet > 0.01 || RightJet > 0.01 || LowerLeftJet > 0.01 || LowerRightJet > 0.01
+        || BoostFlash > 0 || CelebrateTime > 0
         || Opacity < 1 || Popups.Count > 0 || (Bubble is not null && BubbleAge < 0.4)
         || (Bubble is not null && BubbleAge > Bubble.Duration - 0.4)
         || Math.Abs(Squash) > 0.003 || Math.Abs(_squashVelocity) > 0.02
@@ -262,24 +275,17 @@ public sealed class LanderVisual
         }
 
         MainFlame = MathUtil.Damp(MainFlame, throttle, throttle > MainFlame ? 25 : 12, dt);
-        var pushRight = flying ? Math.Max(0, input.Lateral) + Math.Max(0, input.Rotate) : 0;
-        var pushLeft = flying ? Math.Max(0, -input.Lateral) + Math.Max(0, -input.Rotate) : 0;
-        LeftJet = MathUtil.Damp(LeftJet, Math.Min(1, pushRight), 20, dt);
-        RightJet = MathUtil.Damp(RightJet, Math.Min(1, pushLeft), 20, dt);
+        // Cuatro propulsores: trasladarse enciende los dos de un lado; girar, dos opuestos en diagonal.
+        var lateral = flying ? Math.Clamp(input.Lateral, -1, 1) : 0;
+        var rotate = flying ? Math.Clamp(input.Rotate, -1, 1) : 0;
+        LeftJet = Jet(LeftJet, Math.Max(0, lateral) + Math.Max(0, rotate), dt);
+        RightJet = Jet(RightJet, Math.Max(0, -lateral) + Math.Max(0, -rotate), dt);
+        LowerLeftJet = Jet(LowerLeftJet, Math.Max(0, lateral) + Math.Max(0, -rotate), dt);
+        LowerRightJet = Jet(LowerRightJet, Math.Max(0, -lateral) + Math.Max(0, rotate), dt);
 
         if (MainFlame < 0.005)
         {
             MainFlame = 0;
-        }
-
-        if (LeftJet < 0.005)
-        {
-            LeftJet = 0;
-        }
-
-        if (RightJet < 0.005)
-        {
-            RightJet = 0;
         }
 
         BoostFlash = Math.Max(0, BoostFlash - dt);

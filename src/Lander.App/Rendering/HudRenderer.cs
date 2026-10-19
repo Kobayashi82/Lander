@@ -15,8 +15,16 @@ internal static class HudRenderer
     private static readonly Typeface Bold = new(new FontFamily("Segoe UI Variable Display, Segoe UI"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
 
     /// <param name="center">Centro del lander en el mundo (sin rotación).</param>
-    public static void DrawGauges(DrawingContext dc, Point center, double scale, double fuel, double damage, double time)
+    public static void DrawGauges(DrawingContext dc, Point center, double scale, double fuel, double damage, double time, bool legsDown = true)
     {
+        // Patas (G): verdes desplegadas; recogidas, ámbar y parpadeando cerca del suelo no es buena idea.
+        var legsColor = legsDown ? Gfx.Rgb(0x2FBF71) : Gfx.Rgb(0xF5A524);
+        var legsPen = Gfx.Pen(legsColor, 1.1 * scale);
+        var legsAt = new Point(center.X + 27.5 * scale, center.Y + 21 * scale);
+        var spread = (legsDown ? 3.2 : 1.4) * scale;
+        dc.DrawLine(legsPen, new Point(legsAt.X - 1 * scale, legsAt.Y - 3 * scale), new Point(legsAt.X - spread, legsAt.Y));
+        dc.DrawLine(legsPen, new Point(legsAt.X + 1 * scale, legsAt.Y - 3 * scale), new Point(legsAt.X + spread, legsAt.Y));
+
         var height = 34 * scale;
         var top = center.Y - height / 2;
 

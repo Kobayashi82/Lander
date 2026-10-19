@@ -27,6 +27,10 @@ internal sealed class SaucerSkin : LanderSkin
 
     public override Point RightJetPoint => new(20.5, 4);
 
+    public override Point LowerLeftJetPoint => new(-17.5, 7.5);
+
+    public override Point LowerRightJetPoint => new(17.5, 7.5);
+
     public override Color[] DebrisColors { get; } = [Gfx.Rgb(0xC3CCD8), Gfx.Rgb(0x67E8F9), Gfx.Rgb(0x7DDC8F)];
 
     protected override void DrawExhaust(DrawingContext dc, in LanderPose pose)
@@ -45,7 +49,7 @@ internal sealed class SaucerSkin : LanderSkin
     }
 
     protected override void DrawLegs(DrawingContext dc, in LanderPose pose) =>
-        LanderParts.Legs(dc, pose.LegsDeploy, Gfx.Rgb(0xA8B3C2), Gfx.Rgb(0x7C8899), Gfx.Rgb(0x475569), hipX: 9, hipY: 7);
+        LanderParts.Legs(dc, pose.LegsDeploy, Gfx.Rgb(0xA8B3C2), Gfx.Rgb(0x7C8899), Gfx.Rgb(0x475569), hipX: 9, hipY: 7, compress: pose.Compress);
 
     protected override void DrawBody(DrawingContext dc, in LanderPose pose)
     {

@@ -90,9 +90,11 @@ public sealed class DemoPilot(IRandom? random = null)
         return new ManualControls(
             Up: body.Velocity.Y > desiredVy,
             Down: false,
-            Left: vx > desiredVx + 12 * scale,
-            Right: vx < desiredVx - 12 * scale,
-            Boost: false);
+            Left: false,
+            Right: false,
+            Boost: false,
+            SlideLeft: vx > desiredVx + 12 * scale,
+            SlideRight: vx < desiredVx - 12 * scale);
     }
 
     /// <summary>En carrera, el destino es siempre la próxima baliza.</summary>

@@ -13,6 +13,8 @@ internal static class NativeConstants
     public const uint WS_EX_APPWINDOW = 0x00040000;
     public const uint WS_EX_LAYERED = 0x00080000;
     public const uint WS_EX_NOACTIVATE = 0x08000000;
+    public const uint WS_EX_NOREDIRECTIONBITMAP = 0x00200000;
+    public const uint LWA_ALPHA = 0x00000002;
 
     public const int GWL_STYLE = -16;
     public const int GWL_EXSTYLE = -20;

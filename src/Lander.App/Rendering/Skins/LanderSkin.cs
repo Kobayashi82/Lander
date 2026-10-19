@@ -19,26 +19,57 @@ internal abstract class LanderSkin
 
     public virtual Point RightJetPoint => new(15.5, -12.8);
 
+    /// <summary>Propulsores de abajo: con los de arriba, en diagonal, hacen girar la nave.</summary>
+    public virtual Point LowerLeftJetPoint => new(-16.8, 4.5);
+
+    public virtual Point LowerRightJetPoint => new(16.8, 4.5);
+
     /// <summary>Colores de los trozos al estallar.</summary>
     public virtual Color[] DebrisColors { get; } = [Gfx.Rgb(0xE9AE45), Gfx.Rgb(0xE8ECF1), Gfx.Rgb(0x6B7280)];
 
     public void Draw(DrawingContext dc, in LanderPose pose)
     {
+        // Con la suspensión hundida (o estirada) el cuerpo se desplaza y las patas se doblan; los pies se
+        // quedan donde están.
+        var compress = pose.Compress;
+        var shifted = Math.Abs(compress) > 0.01;
+        if (shifted)
+        {
+            dc.PushTransform(new TranslateTransform(0, compress));
+        }
+
         DrawExhaust(dc, pose);
+        if (shifted)
+        {
+            dc.Pop();
+        }
+
         DrawLegs(dc, pose);
+        if (shifted)
+        {
+            dc.PushTransform(new TranslateTransform(0, compress));
+        }
+
         DrawBody(dc, pose);
         LanderParts.Jet(dc, LeftJetPoint, -1, pose.LeftJet);
         LanderParts.Jet(dc, RightJetPoint, 1, pose.RightJet);
+        LanderParts.Jet(dc, LowerLeftJetPoint, -1, pose.LowerLeftJet);
+        LanderParts.Jet(dc, LowerRightJetPoint, 1, pose.LowerRightJet);
         if (pose.Night)
         {
             DrawLights(dc, pose);
+        }
+
+        if (shifted)
+        {
+            dc.Pop();
         }
     }
 
     protected virtual void DrawExhaust(DrawingContext dc, in LanderPose pose) => LanderParts.Flame(dc, Nozzle, pose);
 
     protected virtual void DrawLegs(DrawingContext dc, in LanderPose pose) =>
-        LanderParts.Legs(dc, pose.LegsDeploy, Gfx.Rgb(0xA3ACB9), Gfx.Rgb(0x7B8494), Gfx.Rgb(0x5B6472));
+        LanderParts.Legs(dc, pose.LegsDeploy, Gfx.Rgb(0xA3ACB9), Gfx.Rgb(0x7B8494), Gfx.Rgb(0x5B6472), compress: pose.Compress);
 
     protected abstract void DrawBody(DrawingContext dc, in LanderPose pose);
 

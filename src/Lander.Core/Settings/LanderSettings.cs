@@ -32,8 +32,6 @@ public sealed class LanderSettings
     /// <summary>Altura del lander en DIP (48 por defecto).</summary>
     public double LanderSize { get; set; } = 48;
 
-    public PilotMode PilotMode { get; set; } = PilotMode.Assisted;
-
     public double Shyness { get; set; } = 0.5;
 
     public double Activity { get; set; } = 1;
@@ -59,16 +57,23 @@ public sealed class LanderSettings
 
     public bool ReactToNotifications { get; set; } = true;
 
+    /// <summary>Torpeza del piloto automático, de 0 (nunca se equivoca) a 1 (se despista a menudo).</summary>
+    public double PilotErrors { get; set; } = 0.5;
+
+    /// <summary>Visita el reloj de la barra de tareas a las horas en punto.</summary>
+    public bool VisitClock { get; set; } = true;
+
     public bool Paused { get; set; }
 
     public GameOptions ToGameOptions() => new()
     {
-        PilotMode = PilotMode,
         LanderSizeDip = LanderSize,
         Shyness = Shyness,
         Activity = Activity,
         MissionFrequency = MissionFrequency,
         ManualTimeoutSeconds = ManualTimeoutSeconds,
+        PilotErrors = PilotErrors,
+        VisitClock = VisitClock,
     };
 
     /// <summary>Corrige valores fuera de rango (por ejemplo, de un archivo editado a mano).</summary>
@@ -79,11 +84,7 @@ public sealed class LanderSettings
         Activity = Math.Clamp(double.IsFinite(Activity) ? Activity : 1, 0.25, 3);
         Volume = Math.Clamp(double.IsFinite(Volume) ? Volume : 0.5, 0, 1);
         ManualTimeoutSeconds = Math.Clamp(ManualTimeoutSeconds, 5, 600);
-        if (!Enum.IsDefined(PilotMode))
-        {
-            PilotMode = PilotMode.Assisted;
-        }
-
+        PilotErrors = Math.Clamp(double.IsFinite(PilotErrors) ? PilotErrors : 0.5, 0, 1);
         if (!Enum.IsDefined(MissionFrequency))
         {
             MissionFrequency = MissionFrequency.Normal;

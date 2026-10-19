@@ -28,9 +28,25 @@ internal readonly record struct LanderPose
 
     public double RightJet { get; init; }
 
+    public double LowerLeftJet { get; init; }
+
+    public double LowerRightJet { get; init; }
+
     public double BoostFlash { get; init; }
 
     public bool CarryingPackage { get; init; }
+
+    /// <summary>
+    /// Hundimiento de la suspensión en unidades base: el cuerpo baja y las patas se doblan sin que los pies
+    /// se muevan. Negativo, se estira.
+    /// </summary>
+    public double Compress { get; init; }
+
+    /// <summary>Bostezo, de 0 a 1.</summary>
+    public double Yawn { get; init; }
+
+    /// <summary>Inclinación de la antena por la inercia (radianes).</summary>
+    public double AntennaSway { get; init; }
 
     public LanderPose()
     {

@@ -212,6 +212,17 @@
               <TextBlock Text="Huye" Style="{StaticResource SecondaryTextStyle}" VerticalAlignment="Center" Margin="10,0,0,0" />
             </StackPanel>
           </ui:SettingCard>
+          <ui:SettingCard Glyph="&#xE7BA;" Header="Despistes del piloto" Description="Para que no parezca un robot: a veces calcula mal la frenada o llega torcido. Casi siempre acaba en un aterrizaje duro; muy de vez en cuando, en accidente.">
+            <ComboBox SelectedIndex="{Binding PilotErrors}" MinWidth="160">
+              <ComboBoxItem Content="Ninguno" />
+              <ComboBoxItem Content="Pocos" />
+              <ComboBoxItem Content="Normales" />
+              <ComboBoxItem Content="Muchos" />
+            </ComboBox>
+          </ui:SettingCard>
+          <ui:SettingCard Glyph="&#xE823;" Header="Visitar el reloj a las horas en punto" Description="Vuela hasta el reloj de la barra de tareas y lo celebra (solo si estás delante del PC).">
+            <CheckBox Style="{StaticResource ToggleSwitchStyle}" IsChecked="{Binding VisitClock}" />
+          </ui:SettingCard>
           <ui:SettingCard Glyph="&#xEA8F;" Header="Reaccionar a las notificaciones" Description="Da un saltito de sorpresa cuando llega una notificación.">
             <CheckBox Style="{StaticResource ToggleSwitchStyle}" IsChecked="{Binding ReactToNotifications}" />
           </ui:SettingCard>
@@ -237,23 +248,6 @@
         <StackPanel x:Name="PilotingPage" Visibility="Collapsed">
           <TextBlock Text="Pilotaje" Style="{StaticResource PageTitleStyle}" />
 
-          <ui:SettingCard Glyph="&#xE7FC;" Header="Modo de pilotaje" Wide="True">
-            <StackPanel>
-              <RadioButton GroupName="PilotMode" IsChecked="{Binding IsAssisted}" Margin="0,0,0,8">
-                <StackPanel>
-                  <TextBlock Text="Asistido" />
-                  <TextBlock Text="Izquierda y derecha desplazan la nave sin girarla. Las patas salen solas al acercarte a una plataforma." Style="{StaticResource SecondaryTextStyle}" />
-                </StackPanel>
-              </RadioButton>
-              <RadioButton GroupName="PilotMode" IsChecked="{Binding IsClassic}">
-                <StackPanel>
-                  <TextBlock Text="Clásico" />
-                  <TextBlock Text="Como el Lunar Lander original: izquierda y derecha giran la nave y el motor empuja hacia donde apunta." Style="{StaticResource SecondaryTextStyle}" />
-                </StackPanel>
-              </RadioButton>
-            </StackPanel>
-          </ui:SettingCard>
-
           <TextBlock Text="Controles" Style="{StaticResource SectionHeaderStyle}" />
           <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                   BorderThickness="1" CornerRadius="6" Padding="16,12">
@@ -269,22 +263,31 @@
                 <RowDefinition Height="36" />
                 <RowDefinition Height="36" />
                 <RowDefinition Height="36" />
+                <RowDefinition Height="36" />
+                <RowDefinition Height="36" />
               </Grid.RowDefinitions>
               <Border Style="{StaticResource KeyCapStyle}" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Text="↑" HorizontalAlignment="Center" /></Border>
-              <TextBlock Grid.Column="1" Text="Motor principal" VerticalAlignment="Center" />
+              <TextBlock Grid.Column="1" Text="Motor principal: empuja hacia donde apunta la nave" VerticalAlignment="Center" />
               <StackPanel Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center">
                 <Border Style="{StaticResource KeyCapStyle}"><TextBlock Text="←" HorizontalAlignment="Center" /></Border>
                 <Border Style="{StaticResource KeyCapStyle}"><TextBlock Text="→" HorizontalAlignment="Center" /></Border>
               </StackPanel>
-              <TextBlock Grid.Row="1" Grid.Column="1" Text="Propulsores laterales: girar (clásico) o desplazarse (asistido)" VerticalAlignment="Center" TextWrapping="Wrap" />
-              <Border Grid.Row="2" Style="{StaticResource KeyCapStyle}" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Text="↓" HorizontalAlignment="Center" /></Border>
-              <TextBlock Grid.Row="2" Grid.Column="1" Text="Sacar las patas y estabilizar la nave" VerticalAlignment="Center" />
-              <Border Grid.Row="3" Style="{StaticResource KeyCapStyle}" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Text="Espacio" /></Border>
-              <TextBlock Grid.Row="3" Grid.Column="1" Text="Impulso de emergencia (gasta mucho combustible)" VerticalAlignment="Center" />
-              <Border Grid.Row="4" Style="{StaticResource KeyCapStyle}" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Text="Esc" /></Border>
-              <TextBlock Grid.Row="4" Grid.Column="1" Text="Soltar el control" VerticalAlignment="Center" />
-              <Border Grid.Row="5" Style="{StaticResource KeyCapStyle}" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Text="Barra de tareas" /></Border>
-              <TextBlock Grid.Row="5" Grid.Column="1" Text="La base: aterriza ahí para repostar y reparar daños" VerticalAlignment="Center" />
+              <TextBlock Grid.Row="1" Grid.Column="1" Text="Girar con los propulsores de giro. Al soltar, mantienen la inclinación" VerticalAlignment="Center" TextWrapping="Wrap" />
+              <StackPanel Grid.Row="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <Border Style="{StaticResource KeyCapStyle}"><TextBlock Text="A" HorizontalAlignment="Center" /></Border>
+                <Border Style="{StaticResource KeyCapStyle}"><TextBlock Text="D" HorizontalAlignment="Center" /></Border>
+              </StackPanel>
+              <TextBlock Grid.Row="2" Grid.Column="1" Text="Desplazarse a un lado con los propulsores de traslación, sin girar" VerticalAlignment="Center" TextWrapping="Wrap" />
+              <Border Grid.Row="3" Style="{StaticResource KeyCapStyle}" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Text="↓" HorizontalAlignment="Center" /></Border>
+              <TextBlock Grid.Row="3" Grid.Column="1" Text="Enderezar la nave" VerticalAlignment="Center" />
+              <Border Grid.Row="4" Style="{StaticResource KeyCapStyle}" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Text="G" HorizontalAlignment="Center" /></Border>
+              <TextBlock Grid.Row="4" Grid.Column="1" Text="Sacar o recoger las patas (sin patas, aterrizar es mucho más delicado)" VerticalAlignment="Center" TextWrapping="Wrap" />
+              <Border Grid.Row="5" Style="{StaticResource KeyCapStyle}" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Text="Espacio" /></Border>
+              <TextBlock Grid.Row="5" Grid.Column="1" Text="Impulso de emergencia (gasta mucho combustible)" VerticalAlignment="Center" />
+              <Border Grid.Row="6" Style="{StaticResource KeyCapStyle}" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Text="Esc" /></Border>
+              <TextBlock Grid.Row="6" Grid.Column="1" Text="Soltar el control" VerticalAlignment="Center" />
+              <Border Grid.Row="7" Style="{StaticResource KeyCapStyle}" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Text="Barra de tareas" /></Border>
+              <TextBlock Grid.Row="7" Grid.Column="1" Text="La base: aterriza ahí para repostar y reparar daños" VerticalAlignment="Center" />
             </Grid>
           </Border>
 
@@ -295,7 +298,7 @@
               <TextBlock TextWrapping="Wrap"><Run FontWeight="SemiBold" Text="Perfecto · " /><Run Text="despacio, recto y con las dos patas sobre la plataforma. Puntos extra y las rachas multiplican." /></TextBlock>
               <TextBlock TextWrapping="Wrap" Margin="0,8,0,0"><Run FontWeight="SemiBold" Text="Duro · " /><Run Text="algo rápido o inclinado. Menos puntos y un poco de daño." /></TextBlock>
               <TextBlock TextWrapping="Wrap" Margin="0,8,0,0"><Run FontWeight="SemiBold" Text="Accidente · " /><Run Text="demasiado rápido o de lado. Pequeña explosión y vuelta a la base." /></TextBlock>
-              <TextBlock Style="{StaticResource SecondaryTextStyle}" Margin="0,10,0,0" Text="Una ventana estrecha vale más que la barra de tareas. Sin combustible, el lander planea despacio hasta el suelo." />
+              <TextBlock Style="{StaticResource SecondaryTextStyle}" Margin="0,10,0,0" Text="Una ventana estrecha vale más que la barra de tareas. Sin combustible no hay motor: el lander cae como una piedra." />
             </StackPanel>
           </Border>
         </StackPanel>

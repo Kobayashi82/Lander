@@ -8,15 +8,6 @@ public enum ControlMode
     Manual,
 }
 
-public enum PilotMode
-{
-    /// <summary>Izquierda y derecha giran la nave; el motor empuja hacia donde apunta.</summary>
-    Classic,
-
-    /// <summary>Izquierda y derecha desplazan sin girar; la nave se mantiene recta.</summary>
-    Assisted,
-}
-
 public enum ModeChangeReason
 {
     User,
@@ -34,9 +25,25 @@ public enum MissionFrequency
 }
 
 /// <summary>Teclas del juego pulsadas en este instante.</summary>
-public readonly record struct ManualControls(bool Up, bool Down, bool Left, bool Right, bool Boost)
+/// <param name="Up">↑: motor principal.</param>
+/// <param name="Down">↓: endereza la nave con los propulsores de giro.</param>
+/// <param name="Left">←: gira a la izquierda (propulsores de giro).</param>
+/// <param name="Right">→: gira a la derecha.</param>
+/// <param name="Boost">Espacio: impulso.</param>
+/// <param name="SlideLeft">A: propulsores de traslación hacia la izquierda.</param>
+/// <param name="SlideRight">D: propulsores de traslación hacia la derecha.</param>
+/// <param name="Legs">G: saca o recoge las patas.</param>
+public readonly record struct ManualControls(
+    bool Up,
+    bool Down,
+    bool Left,
+    bool Right,
+    bool Boost,
+    bool SlideLeft = false,
+    bool SlideRight = false,
+    bool Legs = false)
 {
-    public bool Any => Up || Down || Left || Right || Boost;
+    public bool Any => Up || Down || Left || Right || Boost || SlideLeft || SlideRight || Legs;
 }
 
 /// <summary>Lo que el lander percibe del sistema en cada paso.</summary>
@@ -86,8 +93,6 @@ public sealed record WindGust(Vec2 Acceleration, double Duration) : SystemEvent;
 
 public sealed record GameOptions
 {
-    public PilotMode PilotMode { get; init; } = PilotMode.Assisted;
-
     public double LanderSizeDip { get; init; } = 48;
 
     /// <summary>0 = sigue al cursor, 1 = huye de él.</summary>

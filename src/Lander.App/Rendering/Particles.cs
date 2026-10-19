@@ -14,6 +14,9 @@ internal enum ParticleKind : byte
     Confetti,
     Flash,
     Sparkle,
+    Heart,
+    Puff,
+    Ring,
 }
 
 internal struct Particle
@@ -31,7 +34,7 @@ internal struct Particle
     public Color Color;
     public ParticleKind Kind;
 
-    public readonly bool InFront => Kind is ParticleKind.Spark or ParticleKind.Debris or ParticleKind.Confetti or ParticleKind.Sparkle or ParticleKind.Flash;
+    public readonly bool InFront => Kind is ParticleKind.Spark or ParticleKind.Debris or ParticleKind.Confetti or ParticleKind.Sparkle or ParticleKind.Flash or ParticleKind.Heart or ParticleKind.Puff;
 }
 
 /// <summary>Colores de la estela del motor.</summary>
@@ -85,6 +88,7 @@ internal sealed class ParticleSystem
     private double _exhaustAccumulator;
     private double _dustAccumulator;
     private double _wispAccumulator;
+    private readonly double[] _rcsAccumulators = new double[4];
 
     public int Count { get; private set; }
 
@@ -280,6 +284,65 @@ internal sealed class ParticleSystem
         }
     }
 
+    /// <summary>Gas frío de un propulsor de giro o traslación: un chorrito blanco que se disipa enseguida.</summary>
+    public void Rcs(int jet, Vec2 at, Vec2 outward, Vec2 bodyVelocity, double strength, double scale, double dt)
+    {
+        ref var accumulator = ref _rcsAccumulators[Math.Clamp(jet, 0, _rcsAccumulators.Length - 1)];
+        accumulator += dt * 38 * Math.Clamp(strength, 0, 1);
+        while (accumulator >= 1)
+        {
+            accumulator--;
+            var spread = new Vec2(-outward.Y, outward.X) * Range(-18, 18) * scale;
+            Emit(new Particle
+            {
+                Position = at,
+                Velocity = bodyVelocity * 0.6 + outward * Range(70, 120) * scale + spread,
+                Life = Range(0.22, 0.38),
+                Size = Range(1.1, 1.7) * scale,
+                Growth = 7 * scale,
+                Drag = 5,
+                Color = Gfx.Rgb(0xF4F7FB),
+                Kind = ParticleKind.Puff,
+            });
+        }
+    }
+
+    /// <summary>Anillo de polvo que se abre sobre la superficie al tomar tierra.</summary>
+    public void Ring(Vec2 at, double scale, double intensity)
+    {
+        intensity = Math.Clamp(intensity, 0, 1.5);
+        Emit(new Particle
+        {
+            Position = at,
+            Life = 0.45 + 0.2 * intensity,
+            Size = 7 * scale,
+            Growth = (55 + 90 * intensity) * scale,
+            Color = Gfx.Rgb(0xDCD5C6),
+            Kind = ParticleKind.Ring,
+        });
+    }
+
+    /// <summary>Corazones que suben balanceándose (le han acariciado).</summary>
+    public void Hearts(Vec2 at, double scale, int count = 5)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            Emit(new Particle
+            {
+                Position = at + new Vec2(Range(-12, 12), Range(-4, 4)) * scale,
+                Velocity = new Vec2(Range(-14, 14), Range(-46, -28)) * scale,
+                Life = Range(1.0, 1.5),
+                Size = Range(2.6, 3.8) * scale,
+                Rotation = Range(0, Math.Tau),
+                Spin = Range(2.5, 4),
+                Drag = 0.6,
+                Gravity = -6 * scale,
+                Color = i % 3 == 0 ? Gfx.Rgb(0xFF8FB3) : Gfx.Rgb(0xFF5C8A),
+                Kind = ParticleKind.Heart,
+            });
+        }
+    }
+
     /// <summary>Humo de averías cuando el lander está muy dañado.</summary>
     public void DamageWisp(Vec2 at, double damage, double scale, double dt)
     {
@@ -354,6 +417,27 @@ internal sealed class ParticleSystem
                 case ParticleKind.Sparkle:
                     DrawSparkle(dc, position, p.Size * (1 - t * 0.5), p.Color.WithAlpha((1 - t) * edge));
                     break;
+
+                case ParticleKind.Puff:
+                    dc.DrawEllipse(LanderParts.Glow(p.Color, Math.Pow(1 - t, 1.5) * 0.7 * edge), null, position, p.Size, p.Size);
+                    break;
+
+                case ParticleKind.Ring:
+                {
+                    var alpha = (1 - t) * (1 - t) * 0.6 * edge;
+                    dc.DrawEllipse(null, Gfx.Pen(p.Color.WithAlpha(alpha), Math.Max(0.6, p.Size * 0.06) * (1 - t * 0.5)), position, p.Size, p.Size * 0.18);
+                    break;
+                }
+
+                case ParticleKind.Heart:
+                {
+                    // Aparece con un pequeño salto, se balancea y se desvanece al final.
+                    var grow = Math.Min(1, t * 6);
+                    var sway = Math.Sin(p.Rotation) * p.Size * 0.6;
+                    var alpha = Math.Min(1, (1 - t) * 2.5) * edge;
+                    DrawHeart(dc, new Point(position.X + sway, position.Y), p.Size * (0.6 + 0.4 * grow), p.Color.WithAlpha(alpha));
+                    break;
+                }
             }
         }
     }
@@ -373,6 +457,21 @@ internal sealed class ParticleSystem
         dc.PushTransform(new RotateTransform(rotation * 180 / Math.PI, center.X, center.Y));
         dc.DrawRectangle(Gfx.Brush(color), null, new Rect(center.X - width / 2, center.Y - height / 2, width, height));
         dc.Pop();
+    }
+
+    public static void DrawHeart(DrawingContext dc, Point center, double size, Color color)
+    {
+        var s = size;
+        var heart = new StreamGeometry();
+        using (var context = heart.Open())
+        {
+            context.BeginFigure(new Point(center.X, center.Y + s * 0.9), true, true);
+            context.BezierTo(new Point(center.X - s * 1.3, center.Y), new Point(center.X - s * 0.9, center.Y - s * 1.1), new Point(center.X, center.Y - s * 0.35), true, true);
+            context.BezierTo(new Point(center.X + s * 0.9, center.Y - s * 1.1), new Point(center.X + s * 1.3, center.Y), new Point(center.X, center.Y + s * 0.9), true, true);
+        }
+
+        heart.Freeze();
+        dc.DrawGeometry(Gfx.Brush(color), null, heart);
     }
 
     public static void DrawSparkle(DrawingContext dc, Point center, double size, Color color)

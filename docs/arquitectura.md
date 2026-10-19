@@ -59,9 +59,9 @@ trampas.
 - **Terrain**. `TerrainBuilder` convierte monitores y ventanas (en orden Z, de arriba abajo) en un
   `World` inmutable: plataformas de un solo sentido (solo se aterriza desde arriba) y límites (techos,
   suelos de seguridad y paredes con huecos donde hay otro monitor al lado). Recorta las esquinas
-  redondeadas de Windows 11, resta las partes de la barra de título tapadas por ventanas de encima y baja
-  la plataforma de las ventanas pegadas al borde superior (maximizadas o encajadas con Snap) para que
-  quepa el lander, de modo que las ventanas encajadas forman «mesetas» a la misma altura.
+  redondeadas de Windows 11 y resta las partes de la barra de título tapadas por ventanas de encima. Las
+  ventanas maximizadas, o pegadas arriba sin sitio para el lander, no ofrecen plataforma (su barra de
+  título es el techo de la pantalla), aunque siguen tapando lo que tengan detrás.
 - **Physics**. Paso fijo de 60 Hz con integración de Euler semiimplícita. Las magnitudes están definidas
   para un lander de 48 px a 100 % de escala y se multiplican por la escala real (tamaño elegido × DPI
   del monitor), así que la sensación es la misma en cualquier pantalla. Posado sobre una ventana, la
@@ -70,10 +70,25 @@ trampas.
   agarre de las patas (sigue a la ventana o resbala), el balanceo (terremoto y vuelco) y la separación
   (la ventana cae más deprisa que la gravedad o frena en seco al subir). Los saltos de más de 250 px
   (maximizar, restaurar) se tratan como teletransportes: el lander se queda donde estaba y cae.
-- **Autopilot**. Máquina de estados con los siete estados del diseño. El vuelo usa un controlador en
-  cascada: posición → velocidad deseada (con perfiles de frenado) → aceleración → inclinación y motor,
-  exactamente lo que haría un piloto en modo clásico. La aproximación final es la de un piloto prudente:
-  centrarse, estabilizarse en vuelo estacionario y bajar a velocidad de aterrizaje perfecto.
+- **Autopilot** (`Autopilot.cs`, `Autopilot.Flight.cs`, `Autopilot.Behaviors.cs`). Máquina de estados con
+  los siete estados del diseño. El vuelo usa un controlador en cascada: posición → velocidad deseada
+  (perfiles de frenado que cuentan con lo que tarda en girar) → aceleración → inclinación y motor,
+  exactamente lo que haría un piloto. Cada vuelo elige un estilo según distancia, desnivel, energía y
+  combustible: crucero, rasante, perezoso (bajada en hoja), arco (curva de Bézier seguida con una
+  «zanahoria»), panorámico (puntos en el aire) o frenada en el último instante: sube sobre el destino,
+  apaga el motor, cae y enciende cuando la deceleración necesaria llega al 78 % de la disponible, con
+  el empuje justo para tocar a 32 px/s. Puede intercalar una voltereta si hay sitio.
+- **FlightEnvelope**: nunca contra el techo ni las paredes. Recorta la velocidad deseada para poder
+  frenar siempre (hacia arriba basta con apagar el motor) y, como última comprobación, apaga el motor si
+  el punto más alto que alcanzaría por inercia quedara pegado al borde superior. También vigila el suelo
+  de otros monitores al bajar.
+- **FuelPlanner**: estima el combustible de un vuelo (prudente en la mayoría de casos). No sale a un
+  sitio desde el que no pueda volver a la base, vuelve a repostar a tiempo y, en vuelo, se desvía a la
+  base o aterriza donde pueda (con frenada final, que es lo más económico) antes de quedarse seco. Sin
+  combustible no hay motor: cae como cualquier otra cosa.
+- **Despistes** (opcionales): por vuelo hay una probabilidad de calcular mal la altura o la frenada,
+  pasarse de largo o tocar torcido. Casi siempre acaba en un aterrizaje duro; los más graves, en
+  accidente. No cuentan en las estadísticas del jugador.
 - **Missions** y **Progression**: misiones, puntuación, niveles, desbloqueos y mejoras. Un aterrizaje
   solo puntúa tras un vuelo de verdad (al menos 1,5 s y, si vuelve a la misma plataforma, habiendo
   subido), para que no se puedan granjear puntos tocando y despegando.
@@ -128,6 +143,7 @@ Interop/     Declaraciones Win32 con LibraryImport (P/Invoke generado en compila
 | Interfaz (WPF) | Icono de la bandeja, menú, ventana de ajustes y guardado de ajustes y progreso. |
 | Motor (STA) | Crea y posee la ventana del lander, los hooks, los atajos y el temporizador; escanea el escritorio, simula, dibuja y decide los sonidos. |
 | Audio | Solo existe con el sonido activado: mezcla las voces y alimenta waveOut. |
+| Vsync | Solo mientras algo se mueve: espera al reloj del compositor y despierta al motor en cada refresco. |
 
 La interfaz manda órdenes al motor con `EngineHost.Post` (cola concurrente más un evento que lo
 despierta) y el motor avisa a la interfaz con `Dispatcher.BeginInvoke`. El progreso viaja como copias
@@ -139,30 +155,48 @@ ritmo se adapta:
 
 | Situación | Ciclos por segundo |
 | --- | --- |
-| Volando, pilotando, partículas o una ventana moviéndose | 60 (30 con ahorro de energía) |
+| Volando, pilotando, partículas, animaciones o una ventana moviéndose | El refresco del monitor (máx. 165; 30 con ahorro de energía) |
 | Cursor cerca o bocadillo visible | 20 |
 | Posado y tranquilo | 4 |
 | Posado y el usuario lleva más de un minuto sin tocar nada | 2 |
 
 Solo se redibuja cuando cambia algo visible (se compara una firma del estado del fotograma).
 
-## Render: una ventana pequeña que sigue al lander
+## Render por GPU
 
-El diseño proponía una ventana transparente que cubriese todos los monitores. En WPF, una ventana
-transparente se compone en software y se copia **entera** en cada fotograma: con 4K o varios monitores
-eso son decenas de megabytes por fotograma. En su lugar, el lander vive en una **ventana por capas
-pequeña** (unas seis veces su altura) que se mueve con él:
+El lander se dibuja con **Direct2D sobre Direct3D 11** (en la GPU; si no hay, con WARP) y se muestra con
+**DirectComposition** (paquetes Vortice):
 
-- El fotograma se dibuja con la API de dibujo de WPF (`DrawingVisual`) en un `RenderTargetBitmap`
-  reutilizado, se copia a una sección DIB y se presenta con `UpdateLayeredWindow`, que cambia posición e
-  imagen **a la vez** (sin tirones al moverse). Un fotograma típico tarda menos de 1 ms.
-- Estilos `WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE`: siempre encima, fuera
-  de Alt+Tab y de la barra de tareas, y sin activarse al hacer clic (`WM_MOUSEACTIVATE`).
-- Clics: la ventana es transparente al ratón (`WS_EX_TRANSPARENT`) salvo cuando el cursor está sobre el
-  cuerpo del lander (comprobación geométrica en cada ciclo), así que ni siquiera el humo bloquea un clic.
-- Las partículas viven en coordenadas del mundo y se desvanecen al acercarse al borde de la ventana para
-  que no se note el recorte.
-- Los marcadores de misión (cristales, balizas) usan sus propias ventanitas transparentes.
+- Hay una ventana por monitor, transparente al ratón, sin mapa de bits de redirección
+  (`WS_EX_NOREDIRECTIONBITMAP`): vacía no ocupa memoria ni le cuesta nada a DWM. Mide un píxel menos que
+  el monitor por arriba para que ninguna heurística de Windows la tome por una aplicación a pantalla
+  completa, y se oculta en los monitores que sí tienen una.
+- Todas muestran la misma superficie de DirectComposition, desplazada a donde está el lander. La imagen y
+  su posición cambian en la misma transacción (`Commit`): el movimiento nunca tiembla y cruzar de un
+  monitor a otro es continuo.
+- El arte se sigue escribiendo con la API de dibujo de WPF: cada fotograma se graba en un
+  `DrawingGroup` y `DrawingReplayer` lo reproduce con Direct2D (geometrías, degradados, recortes,
+  opacidades, texto e iconos). Las piezas fijas se convierten una sola vez; los pinceles nunca se
+  modifican tras usarlos (Direct2D vaciaría su lote de dibujo) y los halos se dibujan en un espacio
+  unitario para compartir el mismo pincel.
+- Ritmo: un hilo espera al reloj del compositor (`DCompositionWaitForCompositorClock` en Windows 11; si
+  no, la sincronía vertical de la salida de vídeo o `DwmFlush`) y despierta al motor justo después de
+  cada refresco. Así las animaciones van a 60, 144 Hz o lo que dé el monitor (con un tope de 165), y la
+  física, a 60 Hz fijos, se interpola entre pasos (también posado sobre una ventana que se mueve).
+- Clics: como la capa de dibujo deja pasar siempre el ratón, la ventana por capas de siempre hace de
+  diana invisible (alfa 1/255) con la forma del cuerpo del lander, y solo aparece cuando el cursor se
+  acerca.
+- Si la GPU se pierde (controlador actualizado, sesión remota), se recrea todo; tras tres fallos, o con
+  `--software`, se dibuja por CPU como antes: `RenderTargetBitmap` → sección DIB →
+  `UpdateLayeredWindow`.
+
+Un fotograma típico cuesta unos 0,8 ms de CPU en total (grabar 0,2 ms, Direct2D 0,2 ms, envío al
+compositor 0,4 ms) con el rasterizado en la GPU. En reposo solo se redibuja cuando cambia algo visible, y
+el motor se despierta justo cuando el lander parpadea.
+
+Las partículas viven en coordenadas del mundo y se desvanecen al acercarse al borde del fotograma para
+que no se note el recorte. Los marcadores de misión (cristales, balizas) usan sus propias ventanitas
+transparentes.
 
 Los cinco aspectos son vectoriales y se dibujan en «unidades base» (48 de alto, origen en el centro de
 masas); la ventanilla de la cabina hace de ojo y cambia con la expresión. El icono del programa y el de la
@@ -231,9 +265,10 @@ escaneos y eventos por segundo.
 - Modo carrera: reglas de balizas, penalizaciones, récords y medallas, y una carrera completa con el
   piloto simulado, que debe terminar con plata (es prudente) para comprobar que el tiempo de referencia
   es exigente pero alcanzable.
-- Durante el desarrollo se usó además una prueba de estrés (40 escritorios aleatorios con dos monitores
-  de distinto DPI y ventanas que aparecen, se mueven y desaparecen) para afinar el piloto automático: 0
-  accidentes en más de 600 aterrizajes.
+- Durante el desarrollo se usó además una prueba de estrés (200 escritorios aleatorios de uno o dos
+  monitores con distinto DPI y tamaño de lander, quince minutos cada uno) para afinar el piloto automático:
+  más de 4000 aterrizajes sin un accidente, sin tocar el techo ni quedarse sin combustible (con los
+  despistes desactivados).
 - `--preview` y `--preview-settings` permiten revisar todo el arte y la interfaz sin volar.
 
 ## Decisiones respecto al documento de diseño
@@ -241,7 +276,7 @@ escaneos y eventos por segundo.
 | Diseño | Implementación | Motivo |
 | --- | --- | --- |
 | .NET 8 | .NET 10 | .NET 8 deja de tener soporte en noviembre de 2026; .NET 10 es la versión LTS actual. |
-| Capa transparente a pantalla completa | Ventana pequeña que sigue al lander | Coste por fotograma y ausencia de tirones (ver «Render»). |
+| Capa transparente a pantalla completa | Una ventana por monitor sin mapa de bits y una superficie de DirectComposition que se desplaza | Coste casi nulo y sin tirones (ver «Render por GPU»). |
 | `SHAppBarMessage` para la barra de tareas | Área de trabajo de cada monitor | Cubre todos los casos, también los monitores secundarios. |
 | Ocultarse en pantalla completa | Mudarse a otro monitor libre y, si no hay, ocultarse | Con varios monitores, la mascota sigue visible sin molestar. |
 | — | Plataformas de un solo sentido y el piloto automático solo se posa en su destino | Evita quedarse atascado sobre una ventana cuando quiere bajar a la base. |

@@ -33,7 +33,6 @@ public sealed class LanderGame
     private ManualControls _previousControls;
     private double _lastManualInput;
     private bool _manualLegsDown = true;
-    private double _manualRetractAt = -1;
     private Vec2 _dragOffset;
     private Vec2? _dragTarget;
     private Vec2 _gust;
@@ -268,7 +267,6 @@ public sealed class LanderGame
         {
             _lastManualInput = Time;
             _manualLegsDown = Body.LegsDeploy > 0.5;
-            _manualRetractAt = -1;
             Visual.ClearBubble();
             Visual.SetBaseExpression(Expression.Focused);
             Missions.OnModeChanged(mode, World, Body, _events);
@@ -443,39 +441,33 @@ public sealed class LanderGame
             _lastManualInput = Time;
         }
 
-        var downPressed = controls.Down && !_previousControls.Down;
         var boostPressed = controls.Boost && !_previousControls.Boost;
-
-        if (downPressed)
+        if (controls.Legs && !_previousControls.Legs)
         {
-            _manualLegsDown = true;
-            _manualRetractAt = -1;
+            _manualLegsDown = !_manualLegsDown;
         }
 
-        if (_manualRetractAt > 0 && Time >= _manualRetractAt && !controls.Down && Body.IsFlying)
+        // Giro con los propulsores de giro. Sin teclas de giro, los mismos propulsores frenan el giro y
+        // mantienen la inclinación (como el control de actitud de una nave real); ↓ la endereza.
+        var turn = (controls.Right ? 1 : 0) - (controls.Left ? 1 : 0);
+        double rotate = turn;
+        if (turn == 0 && Body.IsFlying)
         {
-            _manualLegsDown = false;
-            _manualRetractAt = -1;
+            rotate = controls.Down
+                ? FlightGuidance.RotateToward(Body, _physics.Config, 0)
+                : Math.Abs(Body.AngularVelocity) > 0.05 ? Math.Clamp(-Body.AngularVelocity * 0.9, -1, 1) : 0;
         }
 
-        var classic = Options.PilotMode == PilotMode.Classic;
-
-        // En modo asistido las patas salen solas al acercarse a una plataforma.
-        if (!classic && !_manualLegsDown && Body.IsFlying
-            && World.PlatformBelow(Body.Position.X, Body.FeetY) is { } below && below.Y - Body.FeetY < Body.Height * 3)
-        {
-            _manualLegsDown = true;
-        }
-
-        var horizontal = (controls.Right ? 1 : 0) - (controls.Left ? 1 : 0);
         return new ThrustInput(
             Throttle: controls.Up ? 1 : 0,
-            Rotate: classic ? horizontal : 0,
-            Lateral: classic ? 0 : horizontal,
-            Stabilize: !classic || controls.Down,
+            Rotate: rotate,
+            Lateral: (controls.SlideRight ? 1 : 0) - (controls.SlideLeft ? 1 : 0),
             Boost: boostPressed,
             RetractLegs: !_manualLegsDown);
     }
+
+    /// <summary>Patas pedidas en modo manual (G las saca o las recoge).</summary>
+    public bool ManualLegsDown => _manualLegsDown;
 
     private void ProcessPhysicsEvents()
     {
@@ -485,11 +477,6 @@ public sealed class LanderGame
             switch (physicsEvent.Kind)
             {
                 case PhysicsEventKind.TookOff:
-                    if (manual)
-                    {
-                        _manualRetractAt = Time + 1;
-                    }
-
                     Missions.OnTakeoff(physicsEvent.Platform, Body);
                     Races.OnTakeoff();
                     Emit(GameEventKind.TookOff, physicsEvent);

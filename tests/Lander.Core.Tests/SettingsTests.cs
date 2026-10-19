@@ -60,7 +60,7 @@ public sealed class SettingsTests : IDisposable
         var settings = new LanderSettings
         {
             LanderSize = 64,
-            PilotMode = PilotMode.Classic,
+            PilotErrors = 0.8,
             MissionFrequency = MissionFrequency.High,
             SoundEnabled = true,
             Skin = "apollo",
@@ -72,12 +72,12 @@ public sealed class SettingsTests : IDisposable
 
         Assert.NotNull(loaded);
         Assert.Equal(64, loaded.LanderSize);
-        Assert.Equal(PilotMode.Classic, loaded.PilotMode);
+        Assert.Equal(0.8, loaded.PilotErrors);
         Assert.Equal(MissionFrequency.High, loaded.MissionFrequency);
         Assert.True(loaded.SoundEnabled);
         Assert.Equal("apollo", loaded.Skin);
         Assert.Equal(settings.ToggleHotkey, loaded.ToggleHotkey);
-        Assert.Contains("\"pilotMode\": \"Classic\"", File.ReadAllText(store.Path));
+        Assert.Contains("\"missionFrequency\": \"High\"", File.ReadAllText(store.Path));
     }
 
     [Fact]

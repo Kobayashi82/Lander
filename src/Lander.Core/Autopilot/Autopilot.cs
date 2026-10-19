@@ -40,6 +40,9 @@ public enum FlightPurpose
 
     /// <summary>Visita el reloj de la barra de tareas a la hora en punto.</summary>
     Clock,
+
+    /// <summary>Vuelo panorámico: recorre el monitor por el aire y se posa en otro sitio.</summary>
+    Sightsee,
 }
 
 /// <summary>Cómo vuela hasta su destino.</summary>
@@ -419,18 +422,21 @@ public sealed partial class Autopilot(IRandom random)
 
         if (_stateTime >= _restDuration)
         {
-            if (TryIdleTrip(ctx))
+            // El primer vuelo siempre es a otro sitio; después, a veces solo un paseo por la misma ventana o
+            // un vuelo panorámico. Sin ventanas a las que ir, sobre todo vuelos panorámicos.
+            var next = CanExplore(ctx) ? DestinationPicker.PickExploration(ctx.World, body, BuildQuery(ctx), random) : null;
+            if (next is null)
             {
-                return ThrustInput.None;
-            }
+                if ((random.Chance(0.6) && TrySightsee(ctx)) || TryIdleTrip(ctx) || TrySightsee(ctx))
+                {
+                    return ThrustInput.None;
+                }
 
-            if (CanExplore(ctx) && DestinationPicker.PickExploration(ctx.World, body, BuildQuery(ctx), random) is { } next)
+                _restDuration = _stateTime + random.Range(15, 30);
+            }
+            else if (!(_hasFlown && TryIdleTrip(ctx)) && !(_hasFlown && random.Chance(0.15) && TrySightsee(ctx)))
             {
                 BeginChoosing(ctx, next, FlightPurpose.Explore, BubbleIcon.Arrow);
-            }
-            else
-            {
-                _restDuration = _stateTime + random.Range(15, 30);
             }
         }
 
@@ -687,6 +693,7 @@ public sealed partial class Autopilot(IRandom random)
         _stateTime = 0;
         _restDuration = duration;
         _destination = null;
+        _plannedTour.Clear();
         _phase = FlightPhase.Transit;
         ctx.Visual.LookTarget = null;
     }

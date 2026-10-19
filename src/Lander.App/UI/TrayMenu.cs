@@ -85,10 +85,13 @@ internal sealed class TrayMenu(SettingsService settings, Func<EngineStatus> stat
 
         menu.Items.Add(new Separator());
 
-        var pilot = new MenuItem { Header = "Pilotaje" };
-        pilot.Items.Add(Check("Asistido", current.PilotMode == PilotMode.Assisted, () => settings.Update(s => s.PilotMode = PilotMode.Assisted)));
-        pilot.Items.Add(Check("Clásico", current.PilotMode == PilotMode.Classic, () => settings.Update(s => s.PilotMode = PilotMode.Classic)));
-        menu.Items.Add(pilot);
+        var mistakes = new MenuItem { Header = "Despistes del piloto" };
+        foreach (var (label, level) in new[] { ("Ninguno", 0.0), ("Pocos", 0.25), ("Normales", 0.5), ("Muchos", 1.0) })
+        {
+            mistakes.Items.Add(Check(label, Math.Abs(current.PilotErrors - level) < 0.01, () => settings.Update(s => s.PilotErrors = level)));
+        }
+
+        menu.Items.Add(mistakes);
 
         var skins = new MenuItem { Header = "Aspecto" };
         foreach (var unlock in Unlocks.OfKind(UnlockKind.Skin))

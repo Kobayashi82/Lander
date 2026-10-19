@@ -262,6 +262,23 @@ internal static unsafe partial class Native
     [LibraryImport(Dwmapi)]
     public static partial int DwmGetWindowAttribute(nint hwnd, uint attribute, void* value, uint size);
 
+    [LibraryImport(Dwmapi)]
+    public static partial int DwmFlush();
+
+    [LibraryImport(User32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool SetLayeredWindowAttributes(nint hwnd, uint colorKey, byte alpha, uint flags);
+
+    /// <summary>
+    /// Espera al siguiente fotograma del compositor (Windows 11) o a alguno de los objetos indicados.
+    /// Devuelve el índice del objeto, <paramref name="count"/> si ha sido el reloj o WAIT_TIMEOUT.
+    /// </summary>
+    [LibraryImport("dcomp.dll")]
+    public static partial uint DCompositionWaitForCompositorClock(uint count, nint* handles, uint timeoutInMs);
+
+    [LibraryImport("dcomp.dll")]
+    public static partial int DCompositionCreateDevice2(nint renderingDevice, Guid* iid, out nint device);
+
     // ---------------------------------------------------------------- Kernel
 
     [LibraryImport(Kernel32, EntryPoint = "CreateWaitableTimerExW")]

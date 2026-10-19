@@ -57,6 +57,9 @@ public sealed partial class Autopilot
     private double _flipPop;
     private double _flipTime;
 
+    private readonly List<Vec2> _tour = [];
+    private readonly List<Vec2> _plannedTour = [];
+
     private PilotMistake _mistake;
     private double _mistakeSeverity;
 
@@ -113,10 +116,23 @@ public sealed partial class Autopilot
         _style = ChooseStyle(ctx, purpose, targetPoint);
         _cruiseY = PlanAltitude(ctx, _style, purpose, targetPoint);
         RollMistake(ctx, purpose);
+
+        // Un vuelo panorámico pasa antes por sus puntos en el aire (sin arcos: ya es un recorrido).
+        _tour.Clear();
+        if (_plannedTour.Count > 0 && purpose is FlightPurpose.Sightsee or FlightPurpose.Explore)
+        {
+            _tour.AddRange(_plannedTour);
+            if (_style == FlightStyle.Arc)
+            {
+                _style = FlightStyle.Cruise;
+            }
+        }
+
+        _plannedTour.Clear();
         _poiseDuration = random.Range(0.35, 0.9);
-        _flipPlanned = _style is FlightStyle.Cruise or FlightStyle.Arc or FlightStyle.Brisk
-            && purpose is FlightPurpose.Explore or FlightPurpose.Investigate or FlightPurpose.Follow or FlightPurpose.Celebrate
-            && Personality.Energy > 0.55 && random.Chance(0.08 + 0.17 * Personality.Energy);
+        _flipPlanned = (_style is FlightStyle.Cruise or FlightStyle.Arc or FlightStyle.Brisk || purpose == FlightPurpose.Sightsee)
+            && purpose is FlightPurpose.Explore or FlightPurpose.Investigate or FlightPurpose.Follow or FlightPurpose.Celebrate or FlightPurpose.Sightsee
+            && Personality.Energy > 0.55 && random.Chance((purpose == FlightPurpose.Sightsee ? 0.25 : 0.08) + 0.17 * Personality.Energy);
     }
 
     /// <summary>
@@ -168,6 +184,12 @@ public sealed partial class Autopilot
         if (purpose == FlightPurpose.EdgeDrop)
         {
             return FlightStyle.HoverSlam;
+        }
+
+        if (purpose == FlightPurpose.Sightsee)
+        {
+            // El final de un vuelo panorámico, muchas veces, en caída libre con frenada en el último momento.
+            return ctx.Body.FuelFraction > 0.55 && ctx.Body.Damage < 0.35 && random.Chance(0.45) ? FlightStyle.HoverSlam : FlightStyle.Cruise;
         }
 
         var body = ctx.Body;
@@ -274,7 +296,7 @@ public sealed partial class Autopilot
             return Takeoff();
         }
 
-        if (_flightTime > MaxFlightSeconds && _purpose != FlightPurpose.Recover)
+        if (_flightTime > (_purpose == FlightPurpose.Sightsee ? MaxFlightSeconds * 1.8 : MaxFlightSeconds) && _purpose != FlightPurpose.Recover)
         {
             _waypoint = null;
             Retarget(ctx, DestinationPicker.PickBelow(ctx.World, body, body.Position, BrakingDistance(body, ctx.Physics)), FlightPurpose.Recover);
@@ -299,6 +321,11 @@ public sealed partial class Autopilot
         if (_phase == FlightPhase.Flip || TryStartFlip(ctx))
         {
             return UpdateFlip(ctx);
+        }
+
+        if (_tour.Count > 0)
+        {
+            return FlyTour(ctx, target);
         }
 
         ctx.Visual.LookTarget = target;
@@ -584,6 +611,54 @@ public sealed partial class Autopilot
         var vx = Math.Sign(delta.X) * Math.Min(230 * scale, MathUtil.BrakingSpeed(delta.X, 70 * scale));
         var vy = Math.Sign(delta.Y) * Math.Min(170 * scale, MathUtil.BrakingSpeed(delta.Y, 90 * scale));
         return Steer(ctx, new Vec2(vx, vy));
+    }
+
+    // Vuelo panorámico ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Pasa por los puntos del recorrido sin pararse (siguiendo una «zanahoria» un poco por delante) y,
+    /// al terminar, sigue hacia su destino con el estilo elegido.
+    /// </summary>
+    private ThrustInput FlyTour(AutopilotContext ctx, Vec2 target)
+    {
+        var body = ctx.Body;
+        var scale = body.Scale;
+        var height = body.Height;
+        var point = _tour[0];
+        ctx.Visual.LookTarget = point;
+        if (Vec2.Distance(point, body.Position) < height * (_tour.Count > 1 ? 1.4 : 0.9))
+        {
+            _tour.RemoveAt(0);
+            if (_tour.Count == 0)
+            {
+                // Recorrido terminado: crucero (o caída libre) a la altura a la que va.
+                var top = FlightEnvelope.HighestCenter(ctx.World, body, body.Position, 0.3);
+                _cruiseY = Math.Min(Math.Max(body.Position.Y, top), target.Y - height * 0.5);
+                if (_style == FlightStyle.HoverSlam && target.Y - _cruiseY < height * 6)
+                {
+                    _style = FlightStyle.Cruise;
+                }
+
+                return UpdateTransit(ctx, target);
+            }
+
+            point = _tour[0];
+        }
+
+        if (_airTime < 0.45)
+        {
+            return Steer(ctx, new Vec2(0, -120 * scale));
+        }
+
+        var delta = point - body.Position;
+        var distance = delta.Length;
+        var cruise = 210 * scale * (0.6 + 0.4 * Personality.Energy);
+
+        // Solo frena de verdad hacia el último punto; entre medias, curva sin pararse.
+        var speed = _tour.Count == 1
+            ? Math.Min(cruise, 60 * scale + MathUtil.ApproachSpeed(distance, 80 * scale, body.Velocity.Length))
+            : cruise;
+        return Steer(ctx, delta / Math.Max(1, distance) * speed, retractLegs: true, maxTilt: 0.62);
     }
 
     // Voltereta ----------------------------------------------------------------------------------------
@@ -1021,6 +1096,7 @@ public sealed partial class Autopilot
         _phase = FlightPhase.Transit;
         _arcStarted = false;
         _flipPlanned = false;
+        _tour.Clear();
         _leaf = false;
         _style = purpose == FlightPurpose.Recover ? FlightStyle.Direct : FlightStyle.Cruise;
         if (destination is not null && destination.TryResolve(ctx.World, body, out var center, out _))

@@ -112,6 +112,12 @@ public partial class App : Application
             DemoMode = e.Args.Contains("--demo") || e.Args.Contains("--demo-manual") || e.Args.Contains("--demo-race"),
             DemoPilot = e.Args.Contains("--demo-manual") || e.Args.Contains("--demo-race") ? new DemoPilot() : null,
             DemoRace = e.Args.Contains("--demo-race"),
+            SoftwareRendering = e.Args.Contains("--software"),
+#if DEBUG
+            Statistics = true,
+#else
+            Statistics = e.Args.Contains("--stats"),
+#endif
         };
         _engine.StatusChanged += OnEngineStatus;
         if (!_engine.DemoMode)

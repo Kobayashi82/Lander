@@ -82,22 +82,34 @@ internal static class LanderParts
         return geometry;
     }
 
-    /// <summary>Dos patas con tirante y pie; se recogen hacia el cuerpo.</summary>
-    public static void Legs(DrawingContext dc, double deploy, Color strut, Color brace, Color pad, double hipX = 10, double hipY = 2)
+    /// <summary>
+    /// Dos patas con tirante y pie; se recogen hacia el cuerpo. Con <paramref name="compress"/> el cuerpo
+    /// (las caderas) baja ese tanto y los amortiguadores se acortan mientras los pies siguen en el suelo.
+    /// </summary>
+    public static void Legs(DrawingContext dc, double deploy, Color strut, Color brace, Color pad, double hipX = 10, double hipY = 2, double compress = 0)
     {
         deploy = Math.Clamp(deploy, 0, 1);
         var strutPen = Gfx.Pen(strut, 1.8);
         var bracePen = Gfx.Pen(brace, 1.2);
         var padBrush = Gfx.Brush(pad);
+        var shockPen = Gfx.Pen(Gfx.Lerp(strut, Colors.White, 0.35), 1.1);
+
+        // Con las patas recogidas no hay suspensión que valga: todo baja junto.
+        var squash = compress * deploy;
         for (var side = -1; side <= 1; side += 2)
         {
-            var hip = new Point(hipX * side, hipY);
-            var retracted = new Point((hipX + 3.5) * side, hipY + 8);
+            var hip = new Point(hipX * side, hipY + squash);
+            var retracted = new Point((hipX + 3.5) * side, hipY + 8 + compress);
             var deployed = new Point(18.5 * side, 22);
             var foot = retracted + (deployed - retracted) * deploy;
-            var knee = hip + (foot - hip) * 0.55;
-            dc.DrawLine(bracePen, new Point((hipX + 3) * side, hipY - 3.5), knee);
-            dc.DrawLine(strutPen, hip, foot);
+            var knee = hip + (foot - hip) * 0.55 + new Vector(side * Math.Max(0, squash) * 0.35, 0);
+            dc.DrawLine(bracePen, new Point((hipX + 3) * side, hipY - 3.5 + squash), knee);
+            dc.DrawLine(strutPen, hip, knee);
+            dc.DrawLine(strutPen, knee, foot);
+
+            // El amortiguador: un tramo más claro que se ve trabajar al posarse.
+            var shock = knee + (foot - knee) * 0.35;
+            dc.DrawLine(shockPen, knee, shock);
             dc.DrawEllipse(padBrush, null, new Point(foot.X, foot.Y + 0.9), 3.4, 1.15);
         }
     }
