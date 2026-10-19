@@ -86,6 +86,7 @@ public sealed class PhysicsEngine(PhysicsConfig config)
             burn += Math.Abs(rotate) * config.RotationBurnRate * dt;
         }
 
+        // Sin combustible no hay propulsores, pero los giróscopos (eléctricos) siguen enderezando la nave.
         if (input.Stabilize || !hasFuel)
         {
             angularAcceleration += -body.Angle * config.StabilizerStiffness - body.AngularVelocity * config.StabilizerDamping;
@@ -112,8 +113,8 @@ public sealed class PhysicsEngine(PhysicsConfig config)
             burn += Math.Abs(lateral) * config.LateralBurnRate * dt;
         }
 
-        var drag = hasFuel ? config.LinearDrag : config.GlideDrag;
-        var velocity = (body.Velocity + acceleration * dt) * Math.Max(0, 1 - drag * dt);
+        // Sin combustible cae como cualquier otra cosa: solo el motor lo sostiene.
+        var velocity = (body.Velocity + acceleration * dt) * Math.Max(0, 1 - config.LinearDrag * dt);
 
         if (input.Boost && body.BoostCooldown <= 0 && body.Fuel >= config.BoostFuelCost * 0.5)
         {
@@ -326,9 +327,11 @@ public sealed class PhysicsEngine(PhysicsConfig config)
 
                     break;
 
+                // En un monitor sin barra de tareas el suelo coincide con el borde inferior: ahí manda la
+                // plataforma (para poder posarse), no la red de seguridad.
                 case BarrierKind.Floor:
                     if (barrier.Spans(position.X) && previous.Y + halfHeight <= barrier.Position + ContactEpsilon
-                        && position.Y + halfHeight > barrier.Position)
+                        && position.Y + halfHeight > barrier.Position && !HasGroundAt(world, position.X, barrier.Position))
                     {
                         body.Position = position.WithY(barrier.Position - halfHeight);
                         if (velocity.Y > 0)
@@ -369,6 +372,19 @@ public sealed class PhysicsEngine(PhysicsConfig config)
                     break;
             }
         }
+    }
+
+    private static bool HasGroundAt(World world, double x, double y)
+    {
+        foreach (var platform in world.Platforms)
+        {
+            if (platform.Kind == PlatformKind.Ground && Math.Abs(platform.Y - y) < 1 && platform.ContainsX(x))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Detecta el cruce de las patas con una plataforma (solo desde arriba) y resuelve el aterrizaje.</summary>

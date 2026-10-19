@@ -42,7 +42,7 @@ public class PhysicsEngineTests
     }
 
     [Fact]
-    public void Without_fuel_it_glides_down_gently()
+    public void Without_fuel_it_falls_freely_and_crashes_from_high_up()
     {
         var world = Desktop();
         var body = Sim.FlyingBody(500, 300, vx: 80);
@@ -51,8 +51,35 @@ public class PhysicsEngineTests
 
         var events = Sim.RunPhysics(_engine, body, world, _ => new ThrustInput(Throttle: 1), b => !b.IsFlying, 60);
 
-        Assert.True(body.IsLanded);
-        Assert.DoesNotContain(events, e => e.Kind == PhysicsEventKind.Crashed);
+        // Caída libre de unos 700 px: llega a más de 400 px/s, muy por encima de lo que aguantan las patas.
+        var crash = Assert.Single(events, e => e.Kind == PhysicsEventKind.Crashed);
+        Assert.True(crash.Magnitude > 400);
+        Assert.Equal(BodyState.Destroyed, body.State);
+    }
+
+    [Fact]
+    public void Lands_on_a_monitor_without_taskbar()
+    {
+        var world = TerrainBuilder.Build([Monitor(taskbar: 0)], []);
+        var body = Sim.FlyingBody(500, Height - 60, vy: 30);
+
+        var events = Sim.RunPhysics(_engine, body, world, b => FlightGuidance.TrackVelocity(b, _engine.Config, new Vec2(0, 30)), b => !b.IsFlying, 10);
+
+        Assert.True(body.IsOnBase);
+        Assert.Contains(events, e => e.Kind == PhysicsEventKind.Touchdown);
+    }
+
+    [Fact]
+    public void Without_fuel_the_gyros_still_keep_it_upright()
+    {
+        var world = Desktop();
+        var body = Sim.FlyingBody(500, 300);
+        body.Fuel = 0;
+        body.Angle = 0.5;
+
+        Sim.RunPhysics(_engine, body, world, _ => ThrustInput.None, _ => false, 1.5);
+
+        Assert.InRange(Math.Abs(body.Angle), 0, 0.05);
     }
 
     [Fact]

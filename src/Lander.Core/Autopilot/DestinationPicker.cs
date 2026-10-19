@@ -21,6 +21,9 @@ public sealed record DestinationQuery
     public IReadOnlySet<long> NewWindows { get; init; } = new HashSet<long>();
 
     public IReadOnlySet<int> AvoidMonitors { get; init; } = new HashSet<int>();
+
+    /// <summary>Si hay combustible para llegar a una plataforma (y volver luego a la base).</summary>
+    public Func<Platform, Vec2, bool>? CanReach { get; init; }
 }
 
 public static class DestinationPicker
@@ -28,7 +31,7 @@ public static class DestinationPicker
     private const int SamplesPerPlatform = 3;
 
     /// <summary>Margen a cada lado del punto de aterrizaje para que las dos patas apoyen.</summary>
-    public static double LandingMargin(LanderBody body) => body.FootOffset + 6 * body.Scale;
+    public static double LandingMargin(LanderBody body) => body.FootOffset + 10 * body.Scale;
 
     public static Destination? PickExploration(World world, LanderBody body, DestinationQuery query, IRandom random)
     {
@@ -54,7 +57,7 @@ public static class DestinationPicker
 
             var target = new Vec2(x, platform.Y - body.HalfHeight);
             var distance = Vec2.Distance(target, body.Position);
-            if (distance < height * 2)
+            if (distance < height * 2 || query.CanReach?.Invoke(platform, target) == false || !FlightEnvelope.HasHeadroom(world, body, target))
             {
                 continue;
             }

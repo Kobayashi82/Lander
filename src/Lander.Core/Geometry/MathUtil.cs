@@ -54,4 +54,14 @@ public static class MathUtil
     /// </summary>
     public static double BrakingSpeed(double distance, double deceleration) =>
         Math.Sqrt(2 * deceleration * Math.Abs(distance));
+
+    /// <summary>
+    /// Como <see cref="BrakingSpeed"/>, pero contando con que la nave tarda <paramref name="lag"/> segundos
+    /// en empezar a frenar (girar hacia el otro lado) y con una llegada final suave y proporcional.
+    /// </summary>
+    public static double ApproachSpeed(double distance, double deceleration, double currentSpeed, double lag = 0.35)
+    {
+        var usable = Math.Max(0, Math.Abs(distance) - Math.Abs(currentSpeed) * lag);
+        return Math.Min(Math.Sqrt(2 * deceleration * usable), Math.Abs(distance) * 2);
+    }
 }

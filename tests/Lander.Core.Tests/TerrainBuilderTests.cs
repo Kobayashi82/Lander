@@ -56,14 +56,35 @@ public class TerrainBuilderTests
     }
 
     [Fact]
-    public void Maximized_window_offers_platform_just_below_the_top_edge()
+    public void Maximized_window_offers_no_platform_and_hides_the_ones_behind()
     {
-        var world = Desktop(Window(1, 0, 0, 1920, 1032, maximized: true));
+        var world = Desktop(Window(1, 0, 0, 1920, 1032, maximized: true), Window(2, 300, 300, 400, 300));
+
+        Assert.False(world.HasOwner(1));
+        Assert.False(world.HasOwner(2));
+        Assert.Single(world.Platforms, p => p.Kind == PlatformKind.Ground);
+    }
+
+    [Fact]
+    public void Window_without_room_above_offers_no_platform()
+    {
+        var world = Desktop(Window(1, 0, 0, 960, 1032), Window(2, 960, 30, 960, 600), Window(3, 960, 700, 960, 300));
+
+        Assert.False(world.HasOwner(1));
+        Assert.False(world.HasOwner(2));
+        Assert.True(world.HasOwner(3));
+    }
+
+    [Fact]
+    public void Window_at_the_top_of_a_monitor_with_another_above_keeps_its_platform()
+    {
+        var top = Monitor(0, taskbar: 0);
+        var bottom = Monitor(1, top: Height, primary: false);
+
+        var world = TerrainBuilder.Build([top, bottom], [Window(1, 200, Height, 800, 500)]);
 
         var platform = Assert.Single(world.SegmentsOf(1));
-        Assert.Equal(48 + 16, platform.Y);
-        Assert.Equal(0, platform.Left);
-        Assert.Equal(1920, platform.Right);
+        Assert.Equal(Height, platform.Y);
     }
 
     [Fact]

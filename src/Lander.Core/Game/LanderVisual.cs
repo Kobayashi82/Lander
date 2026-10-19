@@ -41,6 +41,12 @@ public enum BubbleIcon
     MedalGold,
     MedalSilver,
     MedalBronze,
+
+    /// <summary>Reloj: la hora en punto.</summary>
+    Clock,
+
+    /// <summary>Mano que saluda.</summary>
+    Hello,
 }
 
 /// <param name="Icon">Icono principal.</param>
@@ -117,11 +123,55 @@ public sealed class LanderVisual
 
     public List<ScorePopup> Popups { get; } = [];
 
+    public const double WaveDuration = 1.6;
+    public const double YawnDuration = 2.4;
+    public const double StretchDuration = 1.7;
+    public const double WiggleDuration = 1.1;
+    public const double BounceDuration = 0.75;
+
+    /// <summary>
+    /// Compresión de la suspensión al posarse: positiva hundida, negativa estirada. Oscila como un muelle
+    /// amortiguado y vuelve a 0.
+    /// </summary>
+    public double Squash { get; private set; }
+
+    /// <summary>Segundos que le quedan al saludo con la nave (balanceo de lado a lado).</summary>
+    public double WaveTime { get; private set; }
+
+    public double YawnTime { get; private set; }
+
+    public double StretchTime { get; private set; }
+
+    public double WiggleTime { get; private set; }
+
+    public double BounceTime { get; private set; }
+
+    private double _squashVelocity;
+
     /// <summary>Hay animaciones en curso que requieren refrescar a menudo.</summary>
     public bool IsAnimating =>
         MainFlame > 0.01 || LeftJet > 0.01 || RightJet > 0.01 || BoostFlash > 0 || CelebrateTime > 0
         || Opacity < 1 || Popups.Count > 0 || (Bubble is not null && BubbleAge < 0.4)
-        || (Bubble is not null && BubbleAge > Bubble.Duration - 0.4);
+        || (Bubble is not null && BubbleAge > Bubble.Duration - 0.4)
+        || Math.Abs(Squash) > 0.003 || Math.Abs(_squashVelocity) > 0.02
+        || WaveTime > 0 || YawnTime > 0 || StretchTime > 0 || WiggleTime > 0 || BounceTime > 0
+        || _lookSettling;
+
+    /// <summary>La mirada aún se está moviendo hacia su objetivo.</summary>
+    private bool _lookSettling;
+
+    /// <summary>Golpe de las patas contra la plataforma; 1 equivale al límite de un aterrizaje perfecto.</summary>
+    public void Impact(double strength) => _squashVelocity += Math.Clamp(strength, 0.2, 2.5) * 7;
+
+    public void StartWave() => WaveTime = WaveDuration;
+
+    public void StartYawn() => YawnTime = YawnDuration;
+
+    public void StartStretch() => StretchTime = StretchDuration;
+
+    public void StartWiggle() => WiggleTime = WiggleDuration;
+
+    public void StartBounce() => BounceTime = BounceDuration;
 
     public void ShowBubble(Bubble bubble)
     {
@@ -187,6 +237,22 @@ public sealed class LanderVisual
         }
 
         Look = MathUtil.Damp(Look, target, 8, dt);
+        _lookSettling = (Look - target).LengthSquared > 0.0004;
+
+        // Suspensión: muelle amortiguado (unas dos oscilaciones visibles y quieto en medio segundo).
+        _squashVelocity += (-260 * Squash - 15 * _squashVelocity) * dt;
+        Squash = Math.Clamp(Squash + _squashVelocity * dt, -0.45, 1.2);
+        if (Math.Abs(Squash) < 0.003 && Math.Abs(_squashVelocity) < 0.02)
+        {
+            Squash = 0;
+            _squashVelocity = 0;
+        }
+
+        WaveTime = Math.Max(0, WaveTime - dt);
+        YawnTime = Math.Max(0, YawnTime - dt);
+        StretchTime = Math.Max(0, StretchTime - dt);
+        WiggleTime = Math.Max(0, WiggleTime - dt);
+        BounceTime = Math.Max(0, BounceTime - dt);
 
         var flying = body.IsFlying && body.Fuel > 0;
         var throttle = flying ? Math.Clamp(input.Throttle, 0, 1) : 0;

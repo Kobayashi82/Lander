@@ -29,18 +29,15 @@ public sealed record PhysicsConfig
     public double StabilizerStiffness { get; init; } = 16;
     public double StabilizerDamping { get; init; } = 7;
 
-    /// <summary>Resistencia sin combustible: el lander planea despacio hasta el suelo.</summary>
-    public double GlideDrag { get; init; } = 2.4;
-
     public double BoostImpulse { get; init; } = 230;
     public double BoostCooldown { get; init; } = 0.7;
 
     // Combustible
     public double FuelCapacity { get; init; } = 100;
-    public double MainBurnRate { get; init; } = 7;
-    public double LateralBurnRate { get; init; } = 2.5;
-    public double RotationBurnRate { get; init; } = 1;
-    public double BoostFuelCost { get; init; } = 12;
+    public double MainBurnRate { get; init; } = 4.5;
+    public double LateralBurnRate { get; init; } = 1.6;
+    public double RotationBurnRate { get; init; } = 0.6;
+    public double BoostFuelCost { get; init; } = 10;
     public double BaseRefuelRate { get; init; } = 30;
     public double TrickleRefuelRate { get; init; } = 1.2;
 

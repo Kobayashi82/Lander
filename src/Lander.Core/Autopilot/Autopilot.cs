@@ -28,6 +28,58 @@ public enum FlightPurpose
     Recover,
     Celebrate,
     Hop,
+
+    /// <summary>Saltito por la misma plataforma.</summary>
+    Stroll,
+
+    /// <summary>Se tira desde el borde de una ventana y frena en el último momento.</summary>
+    EdgeDrop,
+
+    /// <summary>Va a posarse sobre la ventana que el usuario acaba de activar.</summary>
+    Perch,
+
+    /// <summary>Visita el reloj de la barra de tareas a la hora en punto.</summary>
+    Clock,
+}
+
+/// <summary>Cómo vuela hasta su destino.</summary>
+public enum FlightStyle
+{
+    /// <summary>Saltos cortos y recuperaciones: lo más directo posible.</summary>
+    Direct,
+
+    /// <summary>Sube, se desplaza a una altura de crucero y baja con calma.</summary>
+    Cruise,
+
+    /// <summary>Rasante y rápido, frenando en seco al llegar.</summary>
+    Brisk,
+
+    /// <summary>Despacio y bajando como una hoja (cuando está cansado).</summary>
+    Lazy,
+
+    /// <summary>Un arco amplio y continuo hasta el destino.</summary>
+    Arc,
+
+    /// <summary>Sube por encima del destino, apaga el motor, cae y frena en el último instante.</summary>
+    HoverSlam,
+}
+
+/// <summary>Despistes que puede tener en un vuelo (para que no parezca un robot perfecto).</summary>
+public enum PilotMistake
+{
+    None,
+
+    /// <summary>Enciende el motor un poco tarde en la frenada final.</summary>
+    LateIgnition,
+
+    /// <summary>Calcula mal la altura y llega al suelo demasiado deprisa.</summary>
+    FastTouchdown,
+
+    /// <summary>Frena tarde y se pasa de largo (luego corrige).</summary>
+    Overshoot,
+
+    /// <summary>Se tambalea en los últimos metros y puede tocar torcido.</summary>
+    Wobble,
 }
 
 public sealed class Personality
@@ -64,19 +116,26 @@ public sealed class AutopilotContext
     /// <summary>En pausa o en «No molestar»: termina lo que esté haciendo y no inicia vuelos nuevos.</summary>
     public bool HoldStill { get; set; }
 
+    /// <summary>Visita el reloj de la barra de tareas a las horas en punto.</summary>
+    public bool VisitClock { get; set; } = true;
+
+    /// <summary>Torpeza del piloto, de 0 a 1 (ver <see cref="GameOptions.PilotErrors"/>).</summary>
+    public double PilotErrors { get; set; }
+
     /// <summary>Señales para la capa de juego (celebraciones, sobresaltos...).</summary>
     public List<GameEventKind> Signals { get; } = [];
 }
 
 /// <summary>
-/// La IA del modo automático. Igual que el jugador, solo produce <see cref="ThrustInput"/>.
+/// La IA del modo automático. Igual que el jugador, solo produce <see cref="ThrustInput"/>: el vuelo está
+/// en <c>Autopilot.Flight.cs</c> y los comportamientos en reposo en <c>Autopilot.Behaviors.cs</c>.
 /// </summary>
-public sealed class Autopilot(IRandom random)
+public sealed partial class Autopilot(IRandom random)
 {
     public const double IdleSleepSeconds = 300;
     public const double ChoosingDuration = 1.2;
 
-    private const double MaxFlightSeconds = 30;
+    private const double MaxFlightSeconds = 40;
     private const double NoveltySeconds = 90;
 
     private readonly Dictionary<long, double> _newWindows = [];
@@ -84,11 +143,8 @@ public sealed class Autopilot(IRandom random)
     private Destination? _destination;
     private FlightPurpose _purpose;
     private bool _sleepAfterLanding;
-    private bool _airborneSeen;
     private double _stateTime;
     private double _restDuration = 8;
-    private double _flightTime;
-    private double _cruiseY;
     private Vec2? _waypoint;
     private double _waypointHold;
     private bool _celebrated;
@@ -122,6 +178,7 @@ public sealed class Autopilot(IRandom random)
         _followCooldown -= dt;
         _lookOverrideTime -= dt;
         UpdatePersonality(dt);
+        UpdateCooldowns(dt);
         PruneNovelty(ctx.Time);
 
         var body = ctx.Body;
@@ -136,7 +193,7 @@ public sealed class Autopilot(IRandom random)
             StartRecovery(ctx, startled: true);
         }
 
-        return State switch
+        var input = State switch
         {
             AutopilotState.Resting => UpdateResting(ctx),
             AutopilotState.Sleeping => UpdateSleeping(ctx),
@@ -144,6 +201,9 @@ public sealed class Autopilot(IRandom random)
             AutopilotState.Landing => UpdateLanding(ctx),
             _ => UpdateCruise(ctx),
         };
+
+        // Pase lo que pase, nunca contra el borde superior de la pantalla.
+        return FlightEnvelope.Guard(ctx.World, body, ctx.Physics, input);
     }
 
     /// <summary>Reacciona a un suceso del sistema.</summary>
@@ -160,11 +220,16 @@ public sealed class Autopilot(IRandom random)
                     var widest = segments.MaxBy(s => s.Width)!;
                     _lookOverride = new Vec2(widest.CenterX, widest.Y);
                     _lookOverrideTime = 2.5;
+                    WakeFromNap(ctx);
                     ctx.Visual.Flash(Expression.Curious, 2);
                     _investigateOwner = opened.Handle;
                     _investigateAt = ctx.Time + random.Range(1.5, 4);
                 }
 
+                break;
+
+            case WindowActivated activated:
+                OnWindowActivated(activated.Handle, ctx);
                 break;
 
             case NotificationArrived:
@@ -173,6 +238,7 @@ public sealed class Autopilot(IRandom random)
                     break;
                 }
 
+                WakeFromNap(ctx);
                 ctx.Visual.Flash(Expression.Scared, 1.2);
                 ctx.Signals.Add(GameEventKind.Startled);
                 if (State == AutopilotState.Resting && body.IsLanded && !ctx.HoldStill && body.Support is { } support
@@ -193,6 +259,7 @@ public sealed class Autopilot(IRandom random)
                 var waypoint = ClampToScreen(ctx, emptied.Location + new Vec2(0, -body.Height * 1.6), body.Height * 1.4);
                 if (DestinationPicker.PickBelow(ctx.World, body, waypoint) is { } below)
                 {
+                    WakeFromNap(ctx);
                     _waypoint = waypoint;
                     _waypointHold = 1.8;
                     BeginChoosing(ctx, below, FlightPurpose.Celebrate, BubbleIcon.Star, waypoint);
@@ -207,14 +274,15 @@ public sealed class Autopilot(IRandom random)
     {
         switch (landing.Quality)
         {
-            case LandingQuality.Perfect when _purpose is FlightPurpose.Explore or FlightPurpose.Investigate
-                && random.Chance(0.15):
+            case LandingQuality.Perfect when (_purpose is FlightPurpose.Explore or FlightPurpose.Investigate && random.Chance(0.15))
+                || (_style == FlightStyle.HoverSlam && _purpose != FlightPurpose.Recover && random.Chance(0.5)):
                 ctx.Visual.Flash(Expression.Happy, 2);
                 ctx.Visual.CelebrateTime = 1;
                 ctx.Signals.Add(GameEventKind.Celebrated);
                 break;
             case LandingQuality.Hard:
                 ctx.Visual.Flash(Expression.Scared, 1.5);
+                ctx.Visual.ShowBubble(new Bubble(BubbleIcon.Exclamation, 1.4));
                 break;
         }
     }
@@ -224,6 +292,8 @@ public sealed class Autopilot(IRandom random)
     {
         _waypoint = null;
         _sleepAfterLanding = false;
+        _pendingDrop = null;
+        _napping = false;
         if (ctx.Body.IsFlying)
         {
             StartRecovery(ctx, startled: false);
@@ -239,6 +309,7 @@ public sealed class Autopilot(IRandom random)
     {
         _waypoint = null;
         _sleepAfterLanding = false;
+        _pendingDrop = null;
         if (ctx.Body.IsFlying)
         {
             StartRecovery(ctx, startled: false);
@@ -253,9 +324,15 @@ public sealed class Autopilot(IRandom random)
     {
         var body = ctx.Body;
         var sensors = ctx.Sensors;
-        ctx.Visual.SetBaseExpression(Personality.Energy < 0.25 ? Expression.Tired : Expression.Neutral);
-        UpdateGaze(ctx);
+        UpdateNap(ctx);
+        if (!_napping)
+        {
+            ctx.Visual.SetBaseExpression(Personality.Energy < 0.25 ? Expression.Tired : Expression.Neutral);
+            UpdateGaze(ctx);
+        }
 
+        UpdateRide(ctx);
+        UpdatePetting(ctx);
         if (ctx.HoldStill)
         {
             return ThrustInput.None;
@@ -263,6 +340,7 @@ public sealed class Autopilot(IRandom random)
 
         if (sensors.UserIdleSeconds >= IdleSleepSeconds)
         {
+            _pendingDrop = null;
             if (body.IsOnBase)
             {
                 EnterSleeping(ctx);
@@ -275,6 +353,9 @@ public sealed class Autopilot(IRandom random)
             return ThrustInput.None;
         }
 
+        UpdateGreeting(ctx);
+        UpdateIdleAnimations(ctx);
+
         if (!body.IsOnBase)
         {
             if (sensors.BatteryLow)
@@ -283,9 +364,21 @@ public sealed class Autopilot(IRandom random)
                 return ThrustInput.None;
             }
 
-            if (body.FuelFraction < 0.25)
+            if (NeedsFuel(ctx))
             {
-                StartReturnToBase(ctx, sleep: false, BubbleIcon.Fuel);
+                _pendingDrop = null;
+                var home = FuelPlanner.ToBase(ctx.World, body, ctx.Physics, body.Position);
+                if (body.Fuel >= home + FuelPlanner.Reserve(body) * 0.5)
+                {
+                    StartReturnToBase(ctx, sleep: false, BubbleIcon.Fuel);
+                }
+                else if (ctx.Visual.Bubble is null && random.Chance(ctx.Dt / 15))
+                {
+                    // Ni para volver: espera a que la recarga lenta le dé para el viaje.
+                    ctx.Visual.ShowBubble(new Bubble(BubbleIcon.Fuel, 2));
+                    ctx.Visual.Flash(Expression.Tired, 2);
+                }
+
                 return ThrustInput.None;
             }
 
@@ -301,12 +394,23 @@ public sealed class Autopilot(IRandom random)
             return ThrustInput.None;
         }
 
+        if (_napping)
+        {
+            return ThrustInput.None;
+        }
+
+        if (TryVisitClock(ctx) || TryPerch(ctx))
+        {
+            return ThrustInput.None;
+        }
+
         if (_investigateOwner is { } owner && ctx.Time >= _investigateAt)
         {
             _investigateOwner = null;
             if (CanExplore(ctx) && random.Chance(0.35 + 0.5 * Personality.Curiosity)
                 && owner != body.Support?.OwnerId
-                && DestinationPicker.PickOnOwner(ctx.World, body, owner, random) is { } investigate)
+                && DestinationPicker.PickOnOwner(ctx.World, body, owner, random) is { } investigate
+                && IsReachable(ctx, investigate))
             {
                 BeginChoosing(ctx, investigate, FlightPurpose.Investigate, BubbleIcon.Question);
                 return ThrustInput.None;
@@ -315,6 +419,11 @@ public sealed class Autopilot(IRandom random)
 
         if (_stateTime >= _restDuration)
         {
+            if (TryIdleTrip(ctx))
+            {
+                return ThrustInput.None;
+            }
+
             if (CanExplore(ctx) && DestinationPicker.PickExploration(ctx.World, body, BuildQuery(ctx), random) is { } next)
             {
                 BeginChoosing(ctx, next, FlightPurpose.Explore, BubbleIcon.Arrow);
@@ -346,7 +455,11 @@ public sealed class Autopilot(IRandom random)
             visual.SetBaseExpression(Expression.Neutral);
             visual.Flash(Expression.Tired, 2.5);
             visual.ClearBubble();
+            visual.StartStretch();
             EnterResting(ctx, random.Range(20, 45));
+
+            // Recién despierto: un saludo cuando se le pase el sueño.
+            _greetAt = ctx.Time + 2.6;
         }
 
         return ThrustInput.None;
@@ -376,189 +489,6 @@ public sealed class Autopilot(IRandom random)
         return ThrustInput.None;
     }
 
-    private ThrustInput UpdateCruise(AutopilotContext ctx)
-    {
-        var body = ctx.Body;
-        var scale = body.Scale;
-        var height = body.Height;
-        _flightTime += ctx.Dt;
-
-        if (body.IsFlying)
-        {
-            _airborneSeen = true;
-        }
-        else if (body.IsLanded)
-        {
-            if (_airborneSeen)
-            {
-                OnArrived(ctx);
-                return ThrustInput.None;
-            }
-
-            // Despegue: motor a tope y nave recta.
-            return new ThrustInput(Throttle: 1, Stabilize: true);
-        }
-
-        if (_flightTime > MaxFlightSeconds && _purpose != FlightPurpose.Recover)
-        {
-            _waypoint = null;
-            Retarget(ctx, DestinationPicker.PickBelow(ctx.World, body, body.Position), FlightPurpose.Recover);
-        }
-
-        if (_destination is null || !_destination.TryResolve(ctx.World, body, out var target, out _))
-        {
-            Replan(ctx);
-            if (_destination is null || !_destination.TryResolve(ctx.World, body, out target, out _))
-            {
-                // Nada a la vista: descender despacio y estable.
-                return FlightGuidance.TrackVelocity(body, ctx.Physics, new Vec2(0, 40 * scale));
-            }
-        }
-
-        if (_waypoint is { } waypoint)
-        {
-            return FlyToWaypoint(ctx, waypoint);
-        }
-
-        ctx.Visual.LookTarget = target;
-        var dx = target.X - body.Position.X;
-
-        if (Math.Abs(dx) < height * 0.5 && Math.Abs(body.Velocity.X) < 45 * scale && body.Position.Y <= target.Y + height * 0.2)
-        {
-            State = AutopilotState.Landing;
-            _stateTime = 0;
-            return UpdateLanding(ctx);
-        }
-
-        var energyFactor = 0.55 + 0.45 * Personality.Energy;
-        var cruiseSpeed = (_purpose == FlightPurpose.Dodge ? 260 : 230) * scale * energyFactor;
-        var vx = Math.Sign(dx) * Math.Min(cruiseSpeed, MathUtil.BrakingSpeed(dx, 70 * scale));
-        if (_flightTime < 0.45 && _purpose is not (FlightPurpose.Recover or FlightPurpose.Dodge))
-        {
-            vx = 0;
-        }
-
-        var dy = _cruiseY - body.Position.Y;
-        var vy = Math.Sign(dy) * Math.Min(170 * scale, MathUtil.BrakingSpeed(dy, 90 * scale));
-
-        var retractLegs = _flightTime > 0.6 && body.Position.Y < target.Y - height * 4 && Math.Abs(dx) > height * 3;
-        return Steer(ctx, new Vec2(vx, vy), retractLegs);
-    }
-
-    private ThrustInput FlyToWaypoint(AutopilotContext ctx, Vec2 waypoint)
-    {
-        var body = ctx.Body;
-        var scale = body.Scale;
-        ctx.Visual.LookTarget = waypoint + new Vec2(0, body.Height);
-
-        var delta = waypoint - body.Position;
-        if (delta.Length < body.Height * 0.6 && body.Velocity.Length < 50 * scale)
-        {
-            if (!_celebrated)
-            {
-                _celebrated = true;
-                ctx.Visual.CelebrateTime = 2;
-                ctx.Visual.Flash(Expression.Happy, 2.5);
-                ctx.Visual.ShowBubble(new Bubble(BubbleIcon.Heart, 1.8));
-                ctx.Signals.Add(GameEventKind.Celebrated);
-            }
-
-            _waypointHold -= ctx.Dt;
-            if (_waypointHold <= 0)
-            {
-                _waypoint = null;
-                if (_destination is not null && _destination.TryResolve(ctx.World, body, out var target, out _))
-                {
-                    _cruiseY = Math.Min(body.Position.Y, target.Y) - body.Height * 0.5;
-                }
-            }
-        }
-
-        var vx = Math.Sign(delta.X) * Math.Min(230 * scale, MathUtil.BrakingSpeed(delta.X, 70 * scale));
-        var vy = Math.Sign(delta.Y) * Math.Min(170 * scale, MathUtil.BrakingSpeed(delta.Y, 90 * scale));
-        return Steer(ctx, new Vec2(vx, vy));
-    }
-
-    private ThrustInput UpdateLanding(AutopilotContext ctx)
-    {
-        var body = ctx.Body;
-        var scale = body.Scale;
-        var height = body.Height;
-
-        if (body.IsLanded)
-        {
-            if (_airborneSeen)
-            {
-                OnArrived(ctx);
-                return ThrustInput.None;
-            }
-
-            return new ThrustInput(Throttle: 1, Stabilize: true);
-        }
-
-        _airborneSeen = true;
-        if (_destination is null || !_destination.TryResolve(ctx.World, body, out var target, out _))
-        {
-            Replan(ctx);
-            State = _purpose == FlightPurpose.ReturnToBase ? AutopilotState.ReturningToBase : AutopilotState.Flying;
-            return ThrustInput.None;
-        }
-
-        ctx.Visual.LookTarget = target + new Vec2(0, height);
-        var dx = target.X - body.Position.X;
-        var heightAbove = target.Y - body.Position.Y;
-
-        // La plataforma ha subido por encima: volver a ganar altura.
-        if (heightAbove < -height * 0.3)
-        {
-            _cruiseY = target.Y - height * 1.5;
-            State = _purpose == FlightPurpose.ReturnToBase ? AutopilotState.ReturningToBase : AutopilotState.Flying;
-            return UpdateCruise(ctx);
-        }
-
-        // Como un piloto de verdad: centrarse, estabilizar en estacionario y solo entonces bajar despacio.
-        var vxNow = Math.Abs(body.Velocity.X);
-        double vx;
-        double vy;
-        double maxTilt;
-        if (Math.Abs(dx) > height * 0.9)
-        {
-            vx = Math.Clamp(dx * 1.2, -60 * scale, 60 * scale);
-            vy = 0;
-            maxTilt = 0.35;
-        }
-        else if (heightAbove > height * 1.5)
-        {
-            vx = Math.Clamp(dx, -40 * scale, 40 * scale);
-            vy = Math.Clamp(MathUtil.BrakingSpeed(heightAbove - height * 1.2, 55 * scale), 28 * scale, 160 * scale);
-            maxTilt = 0.3;
-        }
-        else if (Math.Abs(dx) > height * 0.3 || vxNow > 20 * scale || Math.Abs(body.Angle) > 0.12)
-        {
-            vx = Math.Clamp(dx, -25 * scale, 25 * scale);
-            vy = 0;
-            maxTilt = 0.2;
-        }
-        else
-        {
-            vx = Math.Clamp(dx, -12 * scale, 12 * scale);
-            vy = 28 * scale;
-            maxTilt = 0.08;
-        }
-
-        return Steer(ctx, new Vec2(vx, vy), retractLegs: false, maxTilt);
-    }
-
-    /// <summary>
-    /// Pide al controlador la velocidad deseada. Solo se posa en su destino y únicamente en la fase de
-    /// aterrizaje: en crucero pasa por delante de todas las ventanas, aunque el destino se le cruce.
-    /// </summary>
-    private ThrustInput Steer(AutopilotContext ctx, Vec2 velocity, bool retractLegs = false, double maxTilt = FlightGuidance.DefaultMaxTilt) =>
-        FlightGuidance.TrackVelocity(ctx.Body, ctx.Physics, velocity, retractLegs, maxTilt) with
-        {
-            LandOn = State == AutopilotState.Landing && _destination is not null ? _destination.OwnerId : ThrustInput.GroundOnly,
-        };
-
     private void OnArrived(AutopilotContext ctx)
     {
         var body = ctx.Body;
@@ -575,6 +505,11 @@ public sealed class Autopilot(IRandom random)
         if (_sleepAfterLanding && body.IsOnBase)
         {
             EnterSleeping(ctx);
+            return;
+        }
+
+        if (OnBehaviorArrived(ctx))
+        {
             return;
         }
 
@@ -596,12 +531,14 @@ public sealed class Autopilot(IRandom random)
         if (distance < height * 1.8 && sensors.CursorVelocity.Length > 60 * body.Scale && _dodgeCooldown <= 0)
         {
             _dodgeCooldown = 6;
+            WakeFromNap(ctx);
             if (random.NextDouble() < Personality.Shyness)
             {
                 var dodge = DestinationPicker.PickDodge(ctx.World, body, cursor, random)
                     ?? DestinationPicker.PickExploration(ctx.World, body, BuildQuery(ctx), random);
                 if (dodge is not null)
                 {
+                    _pendingDrop = null;
                     ctx.Visual.Flash(Expression.Scared, 1);
                     StartFlight(ctx, dodge, FlightPurpose.Dodge, AutopilotState.Dodging);
                     return true;
@@ -614,7 +551,7 @@ public sealed class Autopilot(IRandom random)
 
         // Un lander poco tímido se acerca a donde se ha quedado quieto el cursor.
         if (Personality.Shyness < 0.4 && _followCooldown <= 0 && sensors.CursorStillSeconds > 2.5
-            && distance > height * 3 && distance < 700 * body.Scale && CanExplore(ctx))
+            && distance > height * 3 && distance < 700 * body.Scale && CanExplore(ctx) && !_napping)
         {
             _followCooldown = 25;
             if (random.Chance((0.4 - Personality.Shyness) * 2))
@@ -624,8 +561,13 @@ public sealed class Autopilot(IRandom random)
                 if (below is not null && !ctx.Sensors.FullscreenMonitors.Contains(below.MonitorIndex))
                 {
                     var x = Math.Clamp(cursor.X, below.Left + margin, below.Right - margin);
-                    BeginChoosing(ctx, Destination.On(below, x), FlightPurpose.Follow, BubbleIcon.Heart);
-                    return true;
+                    var follow = Destination.On(below, x);
+                    if (IsReachable(ctx, follow))
+                    {
+                        _pendingDrop = null;
+                        BeginChoosing(ctx, follow, FlightPurpose.Follow, BubbleIcon.Heart);
+                        return true;
+                    }
                 }
             }
         }
@@ -675,6 +617,7 @@ public sealed class Autopilot(IRandom random)
         _purpose = purpose;
         State = AutopilotState.Choosing;
         _stateTime = 0;
+        _napping = false;
 
         var body = ctx.Body;
         var target = lookAt ?? (destination.TryResolve(ctx.World, body, out var center, out _) ? center : body.Position);
@@ -682,44 +625,6 @@ public sealed class Autopilot(IRandom random)
         ctx.Visual.LookTarget = target;
         ctx.Visual.ShowBubble(new Bubble(icon, ChoosingDuration + 0.8, direction));
         ctx.Visual.Flash(purpose == FlightPurpose.Investigate ? Expression.Curious : Expression.Focused, ChoosingDuration + 0.5);
-    }
-
-    private void StartFlight(AutopilotContext ctx, Destination? destination, FlightPurpose purpose, AutopilotState state)
-    {
-        _destination = destination;
-        _purpose = purpose;
-        State = state;
-        _stateTime = 0;
-        _flightTime = 0;
-        _celebrated = false;
-        _airborneSeen = ctx.Body.IsFlying;
-        _hasFlown = true;
-        if (purpose != FlightPurpose.Celebrate)
-        {
-            _waypoint = null;
-        }
-
-        var body = ctx.Body;
-        var height = body.Height;
-        var targetY = body.Position.Y;
-        var targetPoint = body.Position;
-        if (destination is not null && destination.TryResolve(ctx.World, body, out var center, out _))
-        {
-            targetY = center.Y;
-            targetPoint = center;
-        }
-
-        var climb = purpose switch
-        {
-            FlightPurpose.Dodge or FlightPurpose.Hop => height * random.Range(0.8, 1.3),
-            FlightPurpose.Recover => height * 0.3,
-            _ => height * random.Range(1.4, 3),
-        };
-
-        // Nunca por debajo del destino: rozando el techo si hace falta, pero llegando siempre desde arriba.
-        var top = Math.Max(MonitorTop(ctx, body.Position), MonitorTop(ctx, targetPoint)) + body.HalfHeight + 4 * body.Scale;
-        var preferred = Math.Max(Math.Min(body.Position.Y, targetY) - climb, top + height * 0.8);
-        _cruiseY = Math.Min(preferred, Math.Max(top, targetY - height * 0.5));
     }
 
     private void StartRecovery(AutopilotContext ctx, bool startled)
@@ -733,6 +638,8 @@ public sealed class Autopilot(IRandom random)
 
         _sleepAfterLanding = false;
         _waypoint = null;
+        _pendingDrop = null;
+        _napping = false;
         var body = ctx.Body;
         StartFlight(ctx, DestinationPicker.PickBelow(ctx.World, body, body.Position, BrakingDistance(body, ctx.Physics)),
             FlightPurpose.Recover, AutopilotState.Flying);
@@ -746,8 +653,7 @@ public sealed class Autopilot(IRandom random)
             return 0;
         }
 
-        var thrustFactor = 1 - physics.MaxDamageThrustPenalty * Math.Clamp(body.Damage, 0, 1);
-        var deceleration = (physics.MainThrust * thrustFactor - physics.Gravity) * body.Scale * 0.6;
+        var deceleration = (physics.MainThrust * FuelPlanner.ThrustFactor(body, physics) - physics.Gravity) * body.Scale * 0.6;
         return deceleration > 0 ? body.Velocity.Y * body.Velocity.Y / (2 * deceleration) : double.MaxValue / 4;
     }
 
@@ -762,26 +668,16 @@ public sealed class Autopilot(IRandom random)
         BeginChoosing(ctx, home, FlightPurpose.ReturnToBase, icon);
     }
 
-    private void Retarget(AutopilotContext ctx, Destination? destination, FlightPurpose purpose)
-    {
-        _destination = destination;
-        _purpose = purpose;
-        _flightTime = 0;
-        if (destination is not null && destination.TryResolve(ctx.World, ctx.Body, out var center, out _))
-        {
-            _cruiseY = Math.Min(ctx.Body.Position.Y, center.Y) - ctx.Body.Height * 0.5;
-        }
-    }
-
     private void Replan(AutopilotContext ctx)
     {
+        var body = ctx.Body;
         if (_purpose == FlightPurpose.ReturnToBase)
         {
-            Retarget(ctx, DestinationPicker.PickBase(ctx.World, ctx.Body, random), FlightPurpose.ReturnToBase);
+            Retarget(ctx, DestinationPicker.PickBase(ctx.World, body, random), FlightPurpose.ReturnToBase);
         }
         else
         {
-            Retarget(ctx, DestinationPicker.PickBelow(ctx.World, ctx.Body, ctx.Body.Position), FlightPurpose.Recover);
+            Retarget(ctx, DestinationPicker.PickBelow(ctx.World, body, body.Position, BrakingDistance(body, ctx.Physics)), FlightPurpose.Recover);
         }
     }
 
@@ -791,6 +687,7 @@ public sealed class Autopilot(IRandom random)
         _stateTime = 0;
         _restDuration = duration;
         _destination = null;
+        _phase = FlightPhase.Transit;
         ctx.Visual.LookTarget = null;
     }
 
@@ -800,6 +697,7 @@ public sealed class Autopilot(IRandom random)
         _stateTime = 0;
         _destination = null;
         _sleepBubbleTimer = 0.5;
+        _napping = false;
         ctx.Visual.SetBaseExpression(Expression.Asleep);
     }
 
@@ -815,6 +713,25 @@ public sealed class Autopilot(IRandom random)
         return !body.IsOnBase || (body.FuelFraction > 0.6 && body.Damage < 0.3);
     }
 
+    /// <summary>Con lo que queda en el depósito ya no puede alejarse más: toca volver a la base.</summary>
+    private static bool NeedsFuel(AutopilotContext ctx)
+    {
+        var body = ctx.Body;
+        if (body.FuelFraction < 0.2)
+        {
+            return true;
+        }
+
+        var home = FuelPlanner.ToBase(ctx.World, body, ctx.Physics, body.Position);
+        return body.Fuel < home * 1.25 + FuelPlanner.Reserve(body);
+    }
+
+    /// <summary>Hay combustible para ir hasta allí y, después, volver a la base.</summary>
+    private static bool IsReachable(AutopilotContext ctx, Destination destination) =>
+        destination.TryResolve(ctx.World, ctx.Body, out var center, out var segment)
+        && FlightEnvelope.HasHeadroom(ctx.World, ctx.Body, center)
+        && FuelPlanner.CanReach(ctx.World, ctx.Body, ctx.Physics, segment, center);
+
     private DestinationQuery BuildQuery(AutopilotContext ctx)
     {
         var body = ctx.Body;
@@ -827,6 +744,7 @@ public sealed class Autopilot(IRandom random)
             ExcludeOwner = body.Support?.OwnerId,
             NewWindows = _newWindows.Keys.ToHashSet(),
             AvoidMonitors = ctx.Sensors.FullscreenMonitors,
+            CanReach = (platform, target) => FuelPlanner.CanReach(ctx.World, body, ctx.Physics, platform, target),
         };
     }
 
@@ -853,7 +771,7 @@ public sealed class Autopilot(IRandom random)
     {
         var energyRate = State switch
         {
-            AutopilotState.Resting => 0.004,
+            AutopilotState.Resting => _napping ? 0.012 : 0.004,
             AutopilotState.Sleeping => 0.012,
             AutopilotState.Choosing => 0,
             _ => -0.004,

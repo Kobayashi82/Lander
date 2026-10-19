@@ -53,13 +53,18 @@ public static class FlightGuidance
             throttle = Vec2.Dot(required, body.Up) / maxThrust;
         }
 
+        return new ThrustInput(
+            Throttle: Math.Clamp(throttle, 0, 1),
+            Rotate: RotateToward(body, config, desiredAngle),
+            RetractLegs: retractLegs);
+    }
+
+    /// <summary>Mando de los propulsores de giro para llevar la nave a <paramref name="desiredAngle"/>.</summary>
+    public static double RotateToward(LanderBody body, PhysicsConfig config, double desiredAngle)
+    {
         var angleError = MathUtil.WrapAngle(desiredAngle - body.Angle);
         var angularAcceleration = AngleGain * angleError - AngularRateGain * body.AngularVelocity;
         var rotate = Math.Clamp(angularAcceleration / config.RotationAcceleration, -1, 1);
-
-        return new ThrustInput(
-            Throttle: Math.Clamp(throttle, 0, 1),
-            Rotate: Math.Abs(rotate) < 0.02 ? 0 : rotate,
-            RetractLegs: retractLegs);
+        return Math.Abs(rotate) < 0.02 ? 0 : rotate;
     }
 }

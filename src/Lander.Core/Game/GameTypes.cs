@@ -64,12 +64,18 @@ public sealed class Sensors
 
     /// <summary>Monitores con una aplicación a pantalla completa.</summary>
     public IReadOnlySet<int> FullscreenMonitors { get; set; } = new HashSet<int>();
+
+    /// <summary>Hora local (para las horas en punto). Null en los tests y simulaciones.</summary>
+    public DateTime? LocalTime { get; set; }
 }
 
 /// <summary>Sucesos puntuales del sistema a los que el lander reacciona.</summary>
 public abstract record SystemEvent;
 
 public sealed record WindowOpened(long Handle) : SystemEvent;
+
+/// <summary>El usuario ha pasado a otra ventana (primer plano).</summary>
+public sealed record WindowActivated(long Handle) : SystemEvent;
 
 public sealed record NotificationArrived : SystemEvent;
 
@@ -93,4 +99,13 @@ public sealed record GameOptions
     public MissionFrequency MissionFrequency { get; init; } = MissionFrequency.Normal;
 
     public double ManualTimeoutSeconds { get; init; } = 30;
+
+    /// <summary>Visita el reloj de la barra de tareas a las horas en punto.</summary>
+    public bool VisitClock { get; init; } = true;
+
+    /// <summary>
+    /// Torpeza del piloto automático, de 0 (nunca se equivoca) a 1: a veces calcula mal la frenada, baja
+    /// demasiado deprisa o llega torcido, y puede acabar en un aterrizaje duro o en un accidente.
+    /// </summary>
+    public double PilotErrors { get; init; }
 }

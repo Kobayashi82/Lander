@@ -100,29 +100,25 @@ public static class TerrainBuilder
             var scale = monitor.DpiScale;
             var work = monitor.WorkArea.IsEmpty ? monitor.Bounds : monitor.WorkArea;
 
-            // El lander necesita sitio por encima: una ventana pegada al borde superior (maximizada o
-            // encajada con Snap) ofrece una plataforma justo por debajo de ese borde.
-            var clearance = (options.LanderHeightDip + options.TopMarginDip) * scale;
-            var y = Math.Max(bounds.Top, monitor.Bounds.Top + clearance);
-            if (window.IsMaximized)
-            {
-                y = Math.Max(y, work.Top + clearance);
-            }
-
-            if (y >= work.Bottom - 1 || y >= bounds.Bottom)
+            // Una ventana maximizada no tiene borde superior sobre el que posarse: su barra de título es
+            // el techo de la pantalla. Lo mismo vale para las que están pegadas arriba (Snap).
+            var y = (double)bounds.Top;
+            if (window.IsMaximized || y >= work.Bottom - 1 || y >= bounds.Bottom)
             {
                 continue;
             }
 
-            var inset = window.IsMaximized ? 0 : options.CornerRadiusDip * scale;
+            var inset = options.CornerRadiusDip * scale;
             var span = new Interval(bounds.Left + inset, bounds.Right - inset);
             if (span.IsEmpty)
             {
                 continue;
             }
 
-            // Solo la parte que cae dentro de algún monitor.
-            var pieces = Intervals.Intersect([span], ScreenSpansAt(monitors, y));
+            // Solo la parte que cae dentro de algún monitor y que deja sitio por encima para el lander
+            // (en otro monitor, si lo hay justo encima).
+            var clearance = (options.LanderHeightDip + options.TopMarginDip) * scale;
+            var pieces = Intervals.Intersect(Intervals.Intersect([span], ScreenSpansAt(monitors, y)), ScreenSpansAt(monitors, y - clearance));
 
             // Las ventanas que están por encima en orden Z tapan la barra de título.
             for (var j = 0; j < i && pieces.Count > 0; j++)

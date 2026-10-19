@@ -500,9 +500,14 @@ public sealed class LanderGame
                     break;
 
                 case PhysicsEventKind.Crashed:
-                    Progress.Crashes++;
-                    Progress.CurrentStreak = 0;
-                    ProgressVersion++;
+                    // Los despistes del piloto automático no cuentan en las estadísticas del jugador.
+                    if (manual)
+                    {
+                        Progress.Crashes++;
+                        Progress.CurrentStreak = 0;
+                        ProgressVersion++;
+                    }
+
                     Missions.OnCrash(Body, _events);
                     Races.OnCrash(Body, _events);
                     Emit(GameEventKind.Crashed, physicsEvent, manual);
@@ -569,6 +574,7 @@ public sealed class LanderGame
         var landing = physicsEvent.Landing!;
         var platform = physicsEvent.Platform!;
         var points = 0;
+        Visual.Impact(landing.VerticalSpeed / (_physics.Config.Perfect.VerticalSpeed * Body.Scale));
 
         // Solo puntúa un vuelo de verdad: ni un salto de una décima ni subir un palmo y volver al mismo sitio.
         var scores = Time - _flightStart >= MinScoringFlight
@@ -944,6 +950,8 @@ public sealed class LanderGame
         _context.Dt = dt;
         _context.Activity = Options.Activity;
         _context.HoldStill = IsPaused || sensors.QuietMode;
+        _context.VisitClock = Options.VisitClock;
+        _context.PilotErrors = Options.PilotErrors;
     }
 
     private void Emit(GameEventKind kind, in PhysicsEvent physicsEvent, bool manual = false) =>

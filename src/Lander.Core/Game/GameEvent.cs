@@ -38,6 +38,24 @@ public enum GameEventKind
     RaceFinished,
     RaceFailed,
     AchievementUnlocked,
+
+    /// <summary>Ha terminado una voltereta en el aire.</summary>
+    Flipped,
+
+    /// <summary>Apaga el motor para caer antes de la frenada final.</summary>
+    EngineCut,
+
+    /// <summary>Enciende el motor a fondo para frenar en el último instante.</summary>
+    Ignition,
+
+    /// <summary>Le han acariciado con el cursor.</summary>
+    Petted,
+
+    /// <summary>Saluda al usuario que vuelve.</summary>
+    Greeted,
+
+    /// <summary>Hora en punto junto al reloj.</summary>
+    HourChime,
 }
 
 /// <summary>Algo que ha pasado en la simulación y que la capa de presentación puede querer mostrar o sonar.</summary>
