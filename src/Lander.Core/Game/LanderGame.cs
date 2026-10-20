@@ -23,6 +23,9 @@ public sealed class LanderGame
     /// <summary>Duración mínima de un vuelo para que su aterrizaje puntúe (evita «tocar y despegar»).</summary>
     public const double MinScoringFlight = 1.5;
 
+    /// <summary>Con cuánta antelación pide ver el contenido antes de elegir destino (da para dos escaneos).</summary>
+    public const double ContentLookahead = 1.6;
+
     private readonly IRandom _random;
     private readonly PhysicsEngine _physics;
     private readonly PhysicsConfig _baseConfig;
@@ -115,6 +118,47 @@ public sealed class LanderGame
         || Math.Abs(Body.Angle) > 0.002
         || Math.Abs(Body.AngularVelocity) > 0.01
         || Body.Support is { } support && support.Velocity.LengthSquared > 1;
+
+    /// <summary>
+    /// Qué contenido de las ventanas necesita ver ahora el lander, para que el anfitrión capture la pantalla
+    /// solo cuando hace falta: posado o volando hacia un borde de contenido, pilotando a mano o en los
+    /// segundos previos a elegir destino. El resto del tiempo, nada.
+    /// </summary>
+    public ContentInterest ContentInterest
+    {
+        get
+        {
+            if (!_initialized || Body.State is BodyState.Destroyed or BodyState.Held)
+            {
+                return default;
+            }
+
+            // Posado sobre contenido hay que seguirlo incluso en pausa: si la página se mueve, se cae.
+            if (Body.IsLanded && Body.Support is { Platform.Kind: PlatformKind.Content } support)
+            {
+                return new ContentInterest(ContentNeed.Landed, Platform.ContentWindow(support.OwnerId));
+            }
+
+            if (IsPaused)
+            {
+                return default;
+            }
+
+            if (Mode == ControlMode.Manual)
+            {
+                return new ContentInterest(ContentNeed.Manual);
+            }
+
+            if (Autopilot.IsFlightActive && Autopilot.Destination is { Kind: PlatformKind.Content } destination)
+            {
+                return new ContentInterest(ContentNeed.Destination, Platform.ContentWindow(destination.OwnerId));
+            }
+
+            return Autopilot.TimeUntilExploring is { } wait && wait <= ContentLookahead
+                ? new ContentInterest(ContentNeed.ChoosingSoon)
+                : default;
+        }
+    }
 
     public void ApplyOptions(GameOptions options)
     {

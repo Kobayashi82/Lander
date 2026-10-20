@@ -230,6 +230,16 @@
             <CheckBox Style="{StaticResource ToggleSwitchStyle}" IsChecked="{Binding AllowDragging}" />
           </ui:SettingCard>
 
+          <TextBlock Text="Contenido de las ventanas" Style="{StaticResource SectionHeaderStyle}" />
+          <ui:SettingCard Glyph="&#xE890;" Header="Posarse en el contenido (experimental)"
+                          Description="Mira la pantalla de vez en cuando para encontrar bordes claros dentro de las ventanas (separadores, cabeceras, tablas) y posarse en ellos; si haces scroll, se mueve con la página. Las imágenes solo se analizan en memoria: nunca se guardan ni se envían. Mientras está activado, el lander no sale en las capturas ni en las grabaciones de pantalla.">
+            <CheckBox Style="{StaticResource ToggleSwitchStyle}" IsChecked="{Binding LandOnContent}" />
+          </ui:SettingCard>
+          <ui:SettingCard Glyph="&#xE72E;" Header="Aplicaciones excluidas"
+                          Description="Nombres de programa separados por comas (por ejemplo «slack, outlook»). Nunca se mira su contenido. Siempre se excluyen los gestores de contraseñas, la banca, la navegación privada y las pantallas de inicio de sesión.">
+            <TextBox Text="{Binding ContentExcludedApps, UpdateSourceTrigger=LostFocus}" Width="220" IsEnabled="{Binding LandOnContent}" />
+          </ui:SettingCard>
+
           <TextBlock Text="Misiones" Style="{StaticResource SectionHeaderStyle}" />
           <ui:SettingCard Glyph="&#xE7C1;" Header="Frecuencia de misiones" Description="De vez en cuando aparece un aviso junto al lander. Toma el control para aceptarla.">
             <ComboBox SelectedIndex="{Binding MissionFrequency}" MinWidth="160">

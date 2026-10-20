@@ -275,6 +275,19 @@ public sealed class SettingsViewModel : ObservableObject
         set => _service.Update(s => s.VisitClock = value);
     }
 
+    public bool LandOnContent
+    {
+        get => S.LandOnContent;
+        set => _service.Update(s => s.LandOnContent = value);
+    }
+
+    /// <summary>Aplicaciones excluidas, separadas por comas («notepad, slack»).</summary>
+    public string ContentExcludedApps
+    {
+        get => string.Join(", ", S.ContentExcludedApps);
+        set => _service.Update(s => s.ContentExcludedApps = [.. (value ?? string.Empty).Split([',', ';', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)]);
+    }
+
     // Sonido --------------------------------------------------------------------------------------
 
     public bool SoundEnabled

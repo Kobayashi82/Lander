@@ -76,6 +76,9 @@ internal sealed unsafe partial class EngineHost
             // La ventana por capas ya no dibuja: solo hace de diana invisible para el ratón.
             _window.Hide();
             _forceRender = true;
+
+            // La captura del contenido de las ventanas reutiliza el mismo dispositivo.
+            _content.SetRenderDevice(_gpu.Direct3D);
         }
         catch (Exception ex) when (ex is SharpGen.Runtime.SharpGenException or InvalidOperationException or InvalidCastException or EntryPointNotFoundException)
         {
@@ -86,6 +89,7 @@ internal sealed unsafe partial class EngineHost
 
     private void DisposeGraphics()
     {
+        _content?.SetRenderDevice(null);
         _vsync?.Dispose();
         _vsync = null;
         _replayer?.Dispose();

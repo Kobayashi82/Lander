@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
+using Lander.Core.Geometry;
 
 namespace Lander.Core.Vision;
 
@@ -49,21 +50,28 @@ public sealed class ContentEdgeDetector
     private ulong[] _fall = [];
     private ulong[] _busyRing = [];
     private ulong[] _blocked = [];
+    private ulong[] _unknownRow = [];
+    private bool _rowMasked;
     private int _words;
     private int _ringRows;
     private readonly List<ContentEdge> _found = [];
 
-    public IReadOnlyList<ContentEdge> Detect(GrayImage image, ContentEdgeOptions options)
+    public IReadOnlyList<ContentEdge> Detect(GrayImage image, ContentEdgeOptions options, IReadOnlyList<PixelRect>? unknown = null)
     {
         var results = new List<ContentEdge>();
-        Detect(image, options, results);
+        Detect(image, options, results, unknown);
         return results;
     }
 
     /// <summary>Añade a <paramref name="results"/> los bordes encontrados, ordenados de arriba abajo.</summary>
+    /// <param name="unknown">
+    /// Zonas de la imagen que no se deben juzgar (por ejemplo, donde está dibujado el propio lander cuando no
+    /// se puede excluir de la captura): no cuentan como ocupadas y un borde puede cruzarlas, pero cada borde
+    /// necesita su longitud mínima fuera de ellas.
+    /// </param>
     /// <remarks>Se compila optimizado desde la primera llamada: se usa pocas veces, pero cada una cuenta.</remarks>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    public void Detect(GrayImage image, ContentEdgeOptions options, List<ContentEdge> results)
+    public void Detect(GrayImage image, ContentEdgeOptions options, List<ContentEdge> results, IReadOnlyList<PixelRect>? unknown = null)
     {
         ArgumentNullException.ThrowIfNull(image);
         ArgumentNullException.ThrowIfNull(options);
@@ -90,6 +98,10 @@ public sealed class ContentEdgeDetector
             var current = pixels.Slice(y * width, width);
             var busy = _busyRing.AsSpan(y % _ringRows * _words, _words);
             ComputeMasks(previous, current, strong, flat, _rise, _fall, busy);
+            if (unknown is { Count: > 0 })
+            {
+                MaskUnknown(unknown, y, width, busy);
+            }
 
             // La zona de encima necesita «clearance» filas completas dentro de la imagen.
             if (y < clearance)
@@ -131,12 +143,73 @@ public sealed class ContentEdgeDetector
             _rise = new ulong[_words];
             _fall = new ulong[_words];
             _blocked = new ulong[_words];
+            _unknownRow = new ulong[_words];
         }
 
         if (_busyRing.Length < _ringRows * _words)
         {
             _busyRing = new ulong[_ringRows * _words];
         }
+
+        _rowMasked = false;
+    }
+
+    /// <summary>Dentro de las zonas desconocidas de esta fila: nada ocupado y borde en las dos polaridades.</summary>
+    private void MaskUnknown(IReadOnlyList<PixelRect> unknown, int y, int width, Span<ulong> busy)
+    {
+        var row = _unknownRow.AsSpan(0, _words);
+        row.Clear();
+        _rowMasked = false;
+        foreach (var rect in unknown)
+        {
+            if (y >= rect.Top && y < rect.Bottom)
+            {
+                SetBits(row, Math.Max(0, rect.Left), Math.Min(width, rect.Right));
+                _rowMasked = true;
+            }
+        }
+
+        if (!_rowMasked)
+        {
+            return;
+        }
+
+        for (var w = 0; w < _words; w++)
+        {
+            busy[w] &= ~row[w];
+            _rise[w] |= row[w];
+            _fall[w] |= row[w];
+        }
+    }
+
+    private static void SetBits(Span<ulong> mask, int from, int to)
+    {
+        for (var x = from; x < to; x++)
+        {
+            mask[x >> 6] |= 1UL << (x & 63);
+        }
+    }
+
+    /// <summary>Bits activos en [from, to).</summary>
+    internal static int CountBits(ReadOnlySpan<ulong> mask, int from, int to)
+    {
+        var count = 0;
+        for (var x = from; x < to;)
+        {
+            var word = x >> 6;
+            var start = x & 63;
+            var end = Math.Min(64, start + (to - x));
+            var bits = mask[word] >> start;
+            if (end - start < 64)
+            {
+                bits &= (1UL << (end - start)) - 1;
+            }
+
+            count += BitOperations.PopCount(bits);
+            x += end - start;
+        }
+
+        return count;
     }
 
     /// <summary>Máscaras de una fila respecto a la de encima.</summary>
@@ -271,19 +344,24 @@ public sealed class ContentEdgeDetector
             }
         }
 
+        var unknownRow = _unknownRow.AsSpan(0, _words);
         var pieceStart = NextClear(blocked, start, end);
         while (pieceStart < end)
         {
             var pieceEnd = NextSet(blocked, pieceStart, end);
-            if (pieceEnd - pieceStart >= minLength)
+            var hidden = _rowMasked ? CountBits(unknownRow, pieceStart, pieceEnd) : 0;
+            if (pieceEnd - pieceStart - hidden >= minLength)
             {
                 var sum = 0;
                 for (var x = pieceStart; x < pieceEnd; x++)
                 {
-                    sum += Math.Abs(current[x] - previous[x]);
+                    if (!_rowMasked || (unknownRow[x >> 6] & (1UL << (x & 63))) == 0)
+                    {
+                        sum += Math.Abs(current[x] - previous[x]);
+                    }
                 }
 
-                _found.Add(new ContentEdge(y, pieceStart, pieceEnd, sum / (pieceEnd - pieceStart), rising));
+                _found.Add(new ContentEdge(y, pieceStart, pieceEnd, sum / (pieceEnd - pieceStart - hidden), rising));
             }
 
             pieceStart = NextClear(blocked, pieceEnd, end);

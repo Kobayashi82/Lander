@@ -52,6 +52,36 @@ public class ContentEdgeTrackerTests
     }
 
     [Fact]
+    public void Unchanged_screen_confirms_without_rescanning_and_demote_undoes_it()
+    {
+        var tracker = new ContentEdgeTracker();
+        Scan(tracker, Page());
+
+        tracker.ConfirmUnchanged();
+        var edge = Assert.Single(tracker.Confirmed);
+
+        tracker.Demote(edge.Id);
+        Assert.Empty(tracker.Confirmed);
+    }
+
+    [Fact]
+    public void Text_changing_below_the_edge_does_not_change_its_identity()
+    {
+        // Como la hora de la fila de debajo de un separador («ahora», «2 min»).
+        var tracker = new ContentEdgeTracker();
+        Scan(tracker, Page());
+        var id = tracker.Edges[0].Id;
+
+        var changed = Canvas(900, 600, 250);
+        FillRect(changed, 100, 300, 700, 2, 180);
+        DrawText(changed, 120, 310, 600, 12, seed: 99);
+        Scan(tracker, changed);
+
+        var edge = Assert.Single(tracker.Confirmed);
+        Assert.Equal(id, edge.Id);
+    }
+
+    [Fact]
     public void Edge_that_disappears_is_forgotten()
     {
         var tracker = new ContentEdgeTracker();

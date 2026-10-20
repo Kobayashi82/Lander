@@ -173,6 +173,9 @@ public sealed partial class Autopilot(IRandom random)
     public bool IsFlightActive => State is AutopilotState.Choosing or AutopilotState.Flying or AutopilotState.Landing
         or AutopilotState.Dodging or AutopilotState.ReturningToBase;
 
+    /// <summary>Segundos que faltan para que, descansando, busque otro destino (null si no está esperando a eso).</summary>
+    public double? TimeUntilExploring => State == AutopilotState.Resting && !_napping ? Math.Max(0, _restDuration - _stateTime) : null;
+
     public ThrustInput Update(AutopilotContext ctx)
     {
         var dt = ctx.Dt;
@@ -751,6 +754,7 @@ public sealed partial class Autopilot(IRandom random)
             ExcludeOwner = body.Support?.OwnerId,
             NewWindows = _newWindows.Keys.ToHashSet(),
             AvoidMonitors = ctx.Sensors.FullscreenMonitors,
+            ActiveWindow = ctx.Sensors.ActiveWindow,
             CanReach = (platform, target) => FuelPlanner.CanReach(ctx.World, body, ctx.Physics, platform, target),
         };
     }

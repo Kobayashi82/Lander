@@ -22,6 +22,9 @@ public sealed record DestinationQuery
 
     public IReadOnlySet<int> AvoidMonitors { get; init; } = new HashSet<int>();
 
+    /// <summary>Ventana en primer plano: sus bordes de contenido se prefieren a los de las demás.</summary>
+    public long ActiveWindow { get; init; }
+
     /// <summary>Si hay combustible para llegar a una plataforma (y volver luego a la base).</summary>
     public Func<Platform, Vec2, bool>? CanReach { get; init; }
 }
@@ -29,6 +32,15 @@ public sealed record DestinationQuery
 public static class DestinationPicker
 {
     private const int SamplesPerPlatform = 3;
+
+    /// <summary>
+    /// Peso de los bordes de contenido: van «de vez en cuando». Cada ventana reparte el suyo entre sus bordes
+    /// (crece con la raíz de cuántos tiene), así que una página llena de líneas no acapara los vuelos.
+    /// </summary>
+    private const double ContentBias = 0.3;
+
+    /// <summary>Los bordes de la ventana activa, que es la que el usuario está mirando, valen más.</summary>
+    private const double ActiveContentBias = 1.8;
 
     /// <summary>Margen a cada lado del punto de aterrizaje para que las dos patas apoyen.</summary>
     public static double LandingMargin(LanderBody body) => body.FootOffset + 10 * body.Scale;
@@ -41,6 +53,7 @@ public static class DestinationPicker
         var height = body.Height;
         var currentMonitor = world.MonitorAt(body.Position)?.Index ?? -1;
         var reach = (700 + 900 * query.Energy) * body.Scale;
+        Dictionary<long, int>? contentCounts = null;
 
         foreach (var platform in world.Platforms)
         {
@@ -70,6 +83,12 @@ public static class DestinationPicker
             if (platform.Kind == PlatformKind.Ground)
             {
                 weight *= query.BaseBias;
+            }
+            else if (platform.Kind == PlatformKind.Content)
+            {
+                contentCounts ??= CountContentByWindow(world);
+                var window = platform.WindowHandle;
+                weight *= ContentBias / Math.Sqrt(contentCounts[window]) * (window == query.ActiveWindow ? ActiveContentBias : 1);
             }
 
             if (query.NewWindows.Contains(platform.OwnerId))
@@ -179,6 +198,20 @@ public static class DestinationPicker
         }
 
         return Destination.On(platform, x);
+    }
+
+    private static Dictionary<long, int> CountContentByWindow(World world)
+    {
+        var counts = new Dictionary<long, int>();
+        foreach (var platform in world.Platforms)
+        {
+            if (platform.Kind == PlatformKind.Content)
+            {
+                counts[platform.WindowHandle] = counts.GetValueOrDefault(platform.WindowHandle) + 1;
+            }
+        }
+
+        return counts;
     }
 
     private static bool TryPickX(World world, LanderBody body, Platform platform, IRandom random, out double x)

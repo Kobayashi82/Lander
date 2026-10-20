@@ -8,6 +8,7 @@ using Lander.App.Platform;
 using Lander.App.Rendering;
 using Lander.App.Rendering.Skins;
 using Lander.App.Services;
+using Lander.App.Vision;
 using Lander.Core;
 using Lander.Core.Game;
 using Lander.Core.Geometry;
@@ -56,6 +57,8 @@ internal sealed unsafe partial class EngineHost : IDisposable
     private readonly Sensors _sensors = new();
     private readonly SystemStatus _system = new();
     private readonly LanderScene _scene = new();
+    private ContentVision _content = null!;
+    private List<WindowInfo> _lastWindows = [];
 
     private LanderGame _game = null!;
     private LayeredWindow _window = null!;
@@ -156,6 +159,12 @@ internal sealed unsafe partial class EngineHost : IDisposable
 
     /// <summary>Registra cada diez segundos ciclos, dibujos y tiempos (siempre en Debug; con <c>--stats</c> en Release).</summary>
     public bool Statistics { get; init; }
+
+    /// <summary>
+    /// El lander sigue saliendo en las capturas de pantalla aunque esté activado posarse en el contenido
+    /// (<c>--show-in-captures</c>); entonces se ignora la zona donde está dibujado al analizar la pantalla.
+    /// </summary>
+    public bool ShowInCaptures { get; init; }
 
     /// <summary>Progreso final, disponible tras <see cref="Stop"/>.</summary>
     public PilotProgress? FinalProgress { get; private set; }
@@ -293,6 +302,13 @@ internal sealed unsafe partial class EngineHost : IDisposable
         var now = Now;
         _lastTick = now;
         _monitors = MonitorService.GetMonitors();
+        _content = new ContentVision
+        {
+            ExcludeOwnWindows = !ShowInCaptures,
+            UserExcludedApps = _settings.ContentExcludedApps,
+            LanderSizeDip = _settings.LanderSize,
+            Enabled = _settings.LandOnContent,
+        };
         InitializeGraphics();
         _system.Update(now, _monitors, _ownWindows);
         RebuildWorld(now);
@@ -425,6 +441,7 @@ internal sealed unsafe partial class EngineHost : IDisposable
             _monitorsDirty = false;
             _monitors = MonitorService.GetMonitors();
             OnMonitorsChanged();
+            _content.OnMonitorsChanged();
             _terrainDirty = true;
             _forceRender = true;
         }
@@ -455,6 +472,11 @@ internal sealed unsafe partial class EngineHost : IDisposable
             return IdleInterval;
         }
 
+        if (UpdateContent(now))
+        {
+            RebuildWorld(now);
+        }
+
         UpdateWind(elapsed);
         StepSimulation(elapsed);
         UpdateEffects(now, elapsed);
@@ -472,6 +494,13 @@ internal sealed unsafe partial class EngineHost : IDisposable
         var interval = IsUserAway() && _game.Body.IsLanded && !_game.Autopilot.IsFlightActive
             ? AwayInterval
             : IsActive(now) ? FrameInterval : IsAttentive() ? AttentiveInterval : IdleInterval;
+
+        // Mirando el contenido de las ventanas: recoger la lectura de la GPU o hacer el siguiente escaneo.
+        var contentWake = _content.NextWake(now) - now;
+        if (contentWake < interval)
+        {
+            interval = Math.Max(contentWake, 0.005);
+        }
 
         // En reposo se despierta justo cuando parpadea, ni antes ni después.
         if (interval > FrameInterval && _game.Visual.Expression != Core.Game.Expression.Asleep && _game.Body.State != BodyState.Destroyed)
@@ -564,10 +593,39 @@ internal sealed unsafe partial class EngineHost : IDisposable
             _windowBounds[(nint)window.Handle] = window.Bounds;
         }
 
-        _world = TerrainBuilder.Build(_monitors, windows, new TerrainOptions { LanderHeightDip = _settings.LanderSize }, now);
+        _lastWindows = windows;
+        _world = TerrainBuilder.Build(_monitors, windows, new TerrainOptions { LanderHeightDip = _settings.LanderSize }, now, _content.Surfaces);
         _terrainDirty = false;
         _lastScan = now;
         _nextSafetyScan = now + 2;
+    }
+
+    /// <summary>
+    /// Bordes del contenido de las ventanas (opción experimental): solo se mira la pantalla cuando el juego
+    /// lo pide. Devuelve true si han cambiado y hay que reconstruir el terreno.
+    /// </summary>
+    private bool UpdateContent(double now)
+    {
+        if (!_content.Enabled)
+        {
+            return false;
+        }
+
+        var body = _game.Body;
+        var reach = body.Height;
+        var landerRect = new PixelRect(
+            (int)(body.Position.X - reach), (int)(body.Position.Y - reach * 1.2),
+            (int)(body.Position.X + reach), (int)(body.Position.Y + reach));
+        var changed = _content.Update(now, _game.ContentInterest, _lastWindows, _monitors, body.Position, landerRect, _sensors.ActiveWindow, _ownWindows);
+        if (changed && Statistics)
+        {
+            var listed = _content.Surfaces.Select(s => _windowBounds.TryGetValue((nint)s.WindowHandle, out var w)
+                ? $"{s.WindowHandle:X}#{s.EdgeId} y={w.Top + s.Y} x={w.Left + s.Left}..{w.Left + s.Right}"
+                : $"{s.WindowHandle:X}#{s.EdgeId}");
+            Log.Stats($"Contenido: {_content.Surfaces.Count} bordes confirmados: {string.Join("; ", listed)}");
+        }
+
+        return changed;
     }
 
     private void UpdateSensors(double elapsed)
@@ -593,6 +651,8 @@ internal sealed unsafe partial class EngineHost : IDisposable
         _sensors.DarkMode = _system.DarkMode;
         _sensors.QuietMode = _system.QuietMode;
         _sensors.FullscreenMonitors = _system.FullscreenMonitors;
+        var foreground = Native.GetForegroundWindow();
+        _sensors.ActiveWindow = _windowBounds.ContainsKey(foreground) ? foreground : 0;
     }
 
     /// <summary>
@@ -684,6 +744,20 @@ internal sealed unsafe partial class EngineHost : IDisposable
             overlay.DrawTicks = overlay.EndDrawTicks = overlay.CommitTicks = 0;
         }
 
+        if (_content.Enabled)
+        {
+            var duplicator = _content.Duplicator;
+            var reads = duplicator?.Reads ?? 0;
+            Log.Stats($"   contenido: {(_content.IsCapturing ? "capturando" : "sin captura")}, {_content.Scans} escaneos ({Stopwatch.GetElapsedTime(0, _content.ScanTicks).TotalMilliseconds / Math.Max(1, _content.Scans):0.00} ms, lectura {Stopwatch.GetElapsedTime(0, duplicator?.ReadTicks ?? 0).TotalMilliseconds / Math.Max(1, reads):0.00} ms), {_content.Reuses} sin cambios, {_content.Surfaces.Count} bordes, interés {_game?.ContentInterest.Need}");
+            _content.Scans = _content.Reuses = 0;
+            _content.ScanTicks = 0;
+            if (duplicator is not null)
+            {
+                duplicator.Reads = 0;
+                duplicator.ReadTicks = 0;
+            }
+        }
+
         _statRenderTicks = _statScanTicks = _statRecordTicks = 0;
         foreach (var (source, count) in _statSources.OrderByDescending(p => p.Value).Take(3))
         {
@@ -769,6 +843,11 @@ internal sealed unsafe partial class EngineHost : IDisposable
             case GameEventKind.Touchdown:
             {
                 var landing = gameEvent.Landing!;
+                if (Statistics && _game.Body.Support?.Platform is { Kind: PlatformKind.Content } content)
+                {
+                    Log.Stats($"Posado en el contenido de {content.WindowHandle:X} ({content.AppId}) en ({_game.Body.Position.X:0}, {content.Y:0}), {landing.Quality}.");
+                }
+
                 var intensity = Math.Clamp(landing.VerticalSpeed / (170 * scale), 0, 1);
                 _particles.DustBurst(feet, 0.25 + intensity, scale);
                 _particles.Ring(feet, scale, 0.2 + intensity);
@@ -1364,7 +1443,7 @@ internal sealed unsafe partial class EngineHost : IDisposable
                     break;
 
                 case MissionKind.LandOnApp:
-                    var target = _world.Platforms.Where(p => p.AppId == mission.AppId).MaxBy(p => p.Width);
+                    var target = _world.Platforms.Where(p => p.Kind == PlatformKind.Window && p.AppId == mission.AppId).MaxBy(p => p.Width);
                     if (target is not null)
                     {
                         _markerSpecs.Add(new MarkerSpec(MarkerKind.Beacon, new Vec2(target.CenterX, target.Y), scale, BubbleIcon.App, _icons.Get(target.OwnerId)));
@@ -1452,6 +1531,14 @@ internal sealed unsafe partial class EngineHost : IDisposable
 
         if (Math.Abs(previous.LanderSize - settings.LanderSize) > 0.01)
         {
+            _content.OnLanderSizeChanged(settings.LanderSize);
+            _terrainDirty = true;
+        }
+
+        _content.UserExcludedApps = settings.ContentExcludedApps;
+        if (_content.Enabled != settings.LandOnContent)
+        {
+            _content.Enabled = settings.LandOnContent;
             _terrainDirty = true;
         }
 
@@ -1527,6 +1614,7 @@ internal sealed unsafe partial class EngineHost : IDisposable
             _desktops?.Dispose();
             _audio?.Dispose();
             _markers?.Dispose();
+            _content?.Dispose();
             DisposeGraphics();
             _window?.Dispose();
             if (_timer != 0)

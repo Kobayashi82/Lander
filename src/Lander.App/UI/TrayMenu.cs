@@ -110,6 +110,7 @@ internal sealed class TrayMenu(SettingsService settings, Func<EngineStatus> stat
         }
 
         menu.Items.Add(trails);
+        menu.Items.Add(Check("Posarse en el contenido (experimental)", current.LandOnContent, () => settings.Update(s => s.LandOnContent = !s.LandOnContent)));
         menu.Items.Add(Check("Sonido", current.SoundEnabled, () => settings.Update(s => s.SoundEnabled = !s.SoundEnabled)));
         menu.Items.Add(new Separator());
 

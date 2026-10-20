@@ -14,9 +14,13 @@ public static class Scoring
         _ => 0,
     };
 
+    /// <summary>Un borde de contenido puntúa como mínimo como una ventana estrecha (unas cuatro veces el lander).</summary>
+    public const double ContentMinDifficulty = 3;
+
     /// <summary>
     /// Dificultad de la plataforma: la barra de tareas vale ×1; una ventana estrecha (poco más ancha que
-    /// el lander) puede llegar a ×4.
+    /// el lander) puede llegar a ×4. Los bordes del contenido, que apenas se distinguen y pueden moverse con
+    /// el scroll, valen siempre como una ventana estrecha.
     /// </summary>
     public static double Difficulty(Platform platform, double landerWidth)
     {
@@ -26,7 +30,8 @@ public static class Scoring
         }
 
         var ratio = platform.Width / landerWidth;
-        return Math.Clamp(1 + (8 - ratio) / 2, 1, 4);
+        var difficulty = Math.Clamp(1 + (8 - ratio) / 2, 1, 4);
+        return platform.Kind == PlatformKind.Content ? Math.Max(difficulty, ContentMinDifficulty) : difficulty;
     }
 
     /// <summary>Multiplicador por racha de aterrizajes perfectos: ×1, ×1,5, ×2, ×2,5, ×3.</summary>

@@ -26,6 +26,9 @@ internal static class NativeConstants
     public const uint GW_OWNER = 4;
     public const uint GA_ROOT = 2;
 
+    public const uint WDA_NONE = 0x00;
+    public const uint WDA_EXCLUDEFROMCAPTURE = 0x11;
+
     // ShowWindow / SetWindowPos
     public const int SW_HIDE = 0;
     public const int SW_SHOWNOACTIVATE = 4;

@@ -65,6 +65,18 @@ public sealed class LanderSettings
 
     public bool Paused { get; set; }
 
+    /// <summary>
+    /// Posarse en el contenido de las ventanas (experimental): mira la pantalla en busca de bordes claros.
+    /// Desactivado por defecto; las imágenes solo se analizan en memoria.
+    /// </summary>
+    public bool LandOnContent { get; set; }
+
+    /// <summary>
+    /// Aplicaciones (nombre del proceso, con o sin «.exe») cuyo contenido no se analiza nunca, además de las
+    /// que excluye siempre <see cref="Vision.ContentPrivacy"/>.
+    /// </summary>
+    public List<string> ContentExcludedApps { get; set; } = [];
+
     public GameOptions ToGameOptions() => new()
     {
         LanderSizeDip = LanderSize,
@@ -105,8 +117,19 @@ public sealed class LanderSettings
             ToggleHotkey = HotkeySetting.Default;
         }
 
+        ContentExcludedApps = (ContentExcludedApps ?? [])
+            .Where(app => !string.IsNullOrWhiteSpace(app))
+            .Select(Vision.ContentPrivacy.NormalizeApp)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
         return this;
     }
 
-    public LanderSettings Clone() => (LanderSettings)MemberwiseClone();
+    public LanderSettings Clone()
+    {
+        var clone = (LanderSettings)MemberwiseClone();
+        clone.ContentExcludedApps = [.. ContentExcludedApps ?? []];
+        return clone;
+    }
 }

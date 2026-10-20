@@ -72,9 +72,34 @@ public sealed class Sensors
     /// <summary>Monitores con una aplicación a pantalla completa.</summary>
     public IReadOnlySet<int> FullscreenMonitors { get; set; } = new HashSet<int>();
 
+    /// <summary>Ventana en primer plano (0 si no es una de las que forman terreno).</summary>
+    public long ActiveWindow { get; set; }
+
     /// <summary>Hora local (para las horas en punto). Null en los tests y simulaciones.</summary>
     public DateTime? LocalTime { get; set; }
 }
+
+/// <summary>Por qué necesita el lander ver el contenido de las ventanas en este momento.</summary>
+public enum ContentNeed
+{
+    /// <summary>No hace falta: no se captura nada.</summary>
+    None,
+
+    /// <summary>Va a elegir destino enseguida: conviene tener los bordes vistos (y confirmados) para entonces.</summary>
+    ChoosingSoon,
+
+    /// <summary>Vuela hacia un borde de contenido: hay que seguir comprobando que sigue ahí.</summary>
+    Destination,
+
+    /// <summary>Posado sobre un borde de contenido: hay que seguirlo (scroll, cambios de página).</summary>
+    Landed,
+
+    /// <summary>Pilotando a mano: los bordes cercanos son plataformas del juego.</summary>
+    Manual,
+}
+
+/// <summary>Qué contenido necesita ver el lander y de qué ventana (0 si no es de una concreta).</summary>
+public readonly record struct ContentInterest(ContentNeed Need, long Window = 0);
 
 /// <summary>Sucesos puntuales del sistema a los que el lander reacciona.</summary>
 public abstract record SystemEvent;

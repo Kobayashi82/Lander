@@ -12,6 +12,7 @@ namespace Lander.Core.Autopilot;
 public sealed partial class Autopilot
 {
     private Destination? _pendingDrop;
+    private int _strollStreak;
     private Vec2 _peekAt;
     private bool _napping;
     private double _napBubbleTimer;
@@ -344,8 +345,17 @@ public sealed partial class Autopilot
             return true;
         }
 
+        // Tras un paseo el descanso es corto, así que sin freno se encadenaban muchos seguidos: el segundo
+        // es menos probable y después siempre toca ir a otro sitio.
         var height = body.Height;
-        if (platform.Width > height * 8 && roll < 0.38)
+        var strollChance = _strollStreak switch
+        {
+            0 => 0.38,
+            1 => 0.15,
+            _ => 0,
+        };
+
+        if (platform.Width > height * 8 && roll < strollChance)
         {
             var margin = DestinationPicker.LandingMargin(body);
             var hop = height * random.Range(2, 5) * random.Sign();

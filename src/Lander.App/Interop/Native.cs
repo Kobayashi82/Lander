@@ -64,6 +64,14 @@ internal static unsafe partial class Native
     public static partial nint GetForegroundWindow();
 
     [LibraryImport(User32)]
+    public static partial nint WindowFromPoint(POINT point);
+
+    /// <summary>Con <c>WDA_EXCLUDEFROMCAPTURE</c> la ventana no sale en capturas de pantalla (Windows 10 2004 o posterior).</summary>
+    [LibraryImport(User32, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool SetWindowDisplayAffinity(nint hwnd, uint affinity);
+
+    [LibraryImport(User32)]
     public static partial nint GetShellWindow();
 
     [LibraryImport(User32)]

@@ -1,3 +1,5 @@
+using Lander.Core.Geometry;
+
 namespace Lander.Core.Vision;
 
 /// <summary>
@@ -50,6 +52,9 @@ public sealed class TrackedEdge
     internal int BandStep { get; set; } = 1;
 
     internal int BandColumns { get; set; }
+
+    /// <summary>Columnas de la franja que se vieron de verdad (no tapadas por una zona desconocida).</summary>
+    internal bool[] BandValid { get; set; } = [];
 }
 
 /// <summary>
@@ -64,6 +69,12 @@ public sealed class ContentEdgeTracker
 
     /// <summary>Filas de la franja desde la superficie hacia abajo (lo que distingue un borde de otro).</summary>
     public const int BandBelow = 18;
+
+    /// <summary>
+    /// Para saber si es el mismo borde basta con el fondo de encima, el borde y unas pocas filas: lo que haya
+    /// más abajo (un texto que cambia, una hora) no debe hacerle perder la identidad.
+    /// </summary>
+    public const int IdentityRows = 4;
 
     /// <summary>Muestras por fila de la franja como mucho.</summary>
     private const int MaxBandColumns = 160;
@@ -87,7 +98,8 @@ public sealed class ContentEdgeTracker
     /// Incorpora un escaneo nuevo. <paramref name="offsetX"/> y <paramref name="offsetY"/> sitúan el píxel
     /// (0, 0) de la imagen en coordenadas locales de la ventana. Los bordes que ya no aparecen se olvidan.
     /// </summary>
-    public void Update(GrayImage image, int offsetX, int offsetY, IReadOnlyList<ContentEdge> detected)
+    /// <param name="unknown">Zonas que no se deben comparar (el propio lander), en coordenadas locales.</param>
+    public void Update(GrayImage image, int offsetX, int offsetY, IReadOnlyList<ContentEdge> detected, IReadOnlyList<PixelRect>? unknown = null)
     {
         ArgumentNullException.ThrowIfNull(image);
         ArgumentNullException.ThrowIfNull(detected);
@@ -119,7 +131,7 @@ public sealed class ContentEdgeTracker
             }
 
             TrackedEdge edge;
-            if (match >= 0 && BandDifference(_edges[match], image, offsetX, offsetY, y - _edges[match].Y) <= ChangedThreshold)
+            if (match >= 0 && BandDifference(_edges[match], image, offsetX, offsetY, y - _edges[match].Y, unknown, maxRow: IdentityRows) <= ChangedThreshold)
             {
                 used[match] = true;
                 edge = _edges[match];
@@ -139,7 +151,7 @@ public sealed class ContentEdgeTracker
                 edge = new TrackedEdge(_nextId++, y, left, right, found.Rising, found.Contrast) { Hits = 1 };
             }
 
-            CaptureBand(edge, image, offsetX, offsetY);
+            CaptureBand(edge, image, offsetX, offsetY, unknown);
             next.Add(edge);
         }
 
@@ -156,6 +168,27 @@ public sealed class ContentEdgeTracker
         }
     }
 
+    /// <summary>
+    /// Un escaneo en el que se sabe (por otra vía) que la imagen no ha cambiado: cuenta como haber visto otra
+    /// vez todos los bordes, sin leer ni analizar nada.
+    /// </summary>
+    public void ConfirmUnchanged()
+    {
+        foreach (var edge in _edges)
+        {
+            edge.Hits++;
+        }
+    }
+
+    /// <summary>Vuelve a dejar el borde sin confirmar (lo que hay alrededor no para de cambiar).</summary>
+    public void Demote(int id)
+    {
+        if (Find(id) is { } edge)
+        {
+            edge.Hits = Math.Min(edge.Hits, 1);
+        }
+    }
+
     public void Remove(int id) => _edges.RemoveAll(e => e.Id == id);
 
     public void Clear() => _edges.Clear();
@@ -164,17 +197,33 @@ public sealed class ContentEdgeTracker
     /// Diferencia media entre la franja guardada de <paramref name="edge"/>, desplazada <paramref name="dy"/>
     /// filas, y la misma zona de <paramref name="image"/>. Infinito si no se solapan lo suficiente.
     /// </summary>
-    public static double BandDifference(TrackedEdge edge, GrayImage image, int offsetX, int offsetY, int dy)
+    /// <param name="unknown">Zonas de la imagen nueva que no se comparan, en coordenadas locales.</param>
+    /// <param name="columnStride">Compara solo una de cada tantas columnas (búsquedas rápidas).</param>
+    /// <param name="maxRow">
+    /// Compara solo hasta esa fila relativa a la superficie (sin incluir); por defecto, la franja entera.
+    /// </param>
+    public static double BandDifference(
+        TrackedEdge edge,
+        GrayImage image,
+        int offsetX,
+        int offsetY,
+        int dy,
+        IReadOnlyList<PixelRect>? unknown = null,
+        int columnStride = 1,
+        int maxRow = BandBelow)
     {
         ArgumentNullException.ThrowIfNull(edge);
         ArgumentNullException.ThrowIfNull(image);
+        columnStride = Math.Max(1, columnStride);
+        var rows = Math.Clamp(edge.Y + maxRow - edge.BandTop, 0, edge.BandRows);
 
         long sum = 0;
         var samples = 0;
         var pixels = image.Pixels;
-        for (var row = 0; row < edge.BandRows; row++)
+        for (var row = 0; row < rows; row++)
         {
-            var imageY = edge.BandTop + row + dy - offsetY;
+            var localY = edge.BandTop + row + dy;
+            var imageY = localY - offsetY;
             if (imageY < 0 || imageY >= image.Height)
             {
                 continue;
@@ -182,10 +231,11 @@ public sealed class ContentEdgeTracker
 
             var line = pixels.Slice(imageY * image.Width, image.Width);
             var band = edge.Band.AsSpan(row * edge.BandColumns, edge.BandColumns);
-            for (var col = 0; col < edge.BandColumns; col++)
+            for (var col = 0; col < edge.BandColumns; col += columnStride)
             {
-                var imageX = edge.BandLeft + col * edge.BandStep - offsetX;
-                if ((uint)imageX < (uint)image.Width)
+                var localX = edge.BandLeft + col * edge.BandStep;
+                var imageX = localX - offsetX;
+                if ((uint)imageX < (uint)image.Width && edge.BandValid[col] && !IsUnknown(unknown, localX, localY))
                 {
                     sum += Math.Abs(line[imageX] - band[col]);
                     samples++;
@@ -193,10 +243,29 @@ public sealed class ContentEdgeTracker
             }
         }
 
-        return samples * 2 < edge.BandRows * edge.BandColumns || samples == 0 ? double.PositiveInfinity : (double)sum / samples;
+        var expected = rows * ((edge.BandColumns + columnStride - 1) / columnStride);
+        return samples * 2 < expected || samples == 0 ? double.PositiveInfinity : (double)sum / samples;
     }
 
-    private static void CaptureBand(TrackedEdge edge, GrayImage image, int offsetX, int offsetY)
+    private static bool IsUnknown(IReadOnlyList<PixelRect>? unknown, int x, int y)
+    {
+        if (unknown is null)
+        {
+            return false;
+        }
+
+        foreach (var rect in unknown)
+        {
+            if (rect.Contains(x, y))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void CaptureBand(TrackedEdge edge, GrayImage image, int offsetX, int offsetY, IReadOnlyList<PixelRect>? unknown)
     {
         var top = Math.Max(edge.Y - BandAbove, offsetY);
         var bottom = Math.Min(edge.Y + BandBelow, offsetY + image.Height);
@@ -209,6 +278,17 @@ public sealed class ContentEdgeTracker
         if (edge.Band.Length != rows * columns)
         {
             edge.Band = new byte[rows * columns];
+        }
+
+        if (edge.BandValid.Length != columns)
+        {
+            edge.BandValid = new bool[columns];
+        }
+
+        for (var col = 0; col < columns; col++)
+        {
+            var x = left + col * step;
+            edge.BandValid[col] = unknown is null || !unknown.Any(r => x >= r.Left && x < r.Right && r.Top < bottom && r.Bottom > top);
         }
 
         var pixels = image.Pixels;

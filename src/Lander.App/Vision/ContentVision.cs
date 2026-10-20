@@ -1,0 +1,535 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using Lander.App.Interop;
+using Lander.App.Platform;
+using Lander.App.Services;
+using Lander.Core.Game;
+using Lander.Core.Geometry;
+using Lander.Core.Terrain;
+using Lander.Core.Vision;
+using Vortice.Direct3D11;
+using static Lander.App.Interop.NativeConstants;
+
+namespace Lander.App.Vision;
+
+/// <summary>
+/// Bordes del contenido de las ventanas para posarse en ellos (opción experimental). Mira la pantalla solo
+/// cuando el juego lo pide (<see cref="ContentInterest"/>), solo en el monitor del lander, como mucho dos
+/// veces por segundo por ventana y nunca si la región no ha cambiado. Las imágenes se analizan en memoria y
+/// se descartan: nunca se guardan ni salen del proceso. Se usa siempre desde el hilo del motor.
+/// </summary>
+internal sealed class ContentVision : IDisposable
+{
+    /// <summary>Entre dos escaneos de la misma ventana.</summary>
+    private const double ScanInterval = 0.5;
+
+    /// <summary>Sin interés en una ventana durante este tiempo, se olvidan sus bordes.</summary>
+    private const double ForgetAfter = 3;
+
+    /// <summary>Sin interés en nada durante este tiempo, se cierra la duplicación del escritorio.</summary>
+    private const double CloseAfter = 6;
+
+    private const double RetryAfterFailure = 20;
+
+    /// <summary>Tras excluir las ventanas propias, lo que tarda el compositor en dejar de mostrarlas.</summary>
+    private const double ExclusionSettle = 0.15;
+
+    private const int MaxWindowsChoosing = 3;
+    private const int MaxWindowsManual = 4;
+
+    private readonly Dictionary<long, WindowState> _states = [];
+    private readonly ContentEdgeDetector _detector = new();
+    private readonly GrayImage _image = new(0, 0);
+    private readonly List<ContentEdge> _edges = [];
+    private readonly HashSet<nint> _excluded = [];
+    private readonly List<WindowInfo> _targets = [];
+    private readonly List<PixelRect> _unknown = [];
+    private readonly List<PixelRect> _unknownLocal = [];
+    private DesktopDuplicator? _duplicator;
+    private ID3D11Device? _renderDevice;
+    private List<ContentSurface> _surfaces = [];
+    private double _lastNeeded = double.NegativeInfinity;
+    private double _retryAt;
+    private double _excludedSince = double.NegativeInfinity;
+    private PendingScan? _pending;
+    private bool _exclusionWorks = true;
+    private bool _enabled;
+
+    /// <summary>Bordes confirmados, listos para el terreno.</summary>
+    public IReadOnlyList<ContentSurface> Surfaces => _surfaces;
+
+    /// <summary>Opción activada en los ajustes.</summary>
+    public bool Enabled
+    {
+        get => _enabled;
+        set
+        {
+            if (_enabled == value)
+            {
+                return;
+            }
+
+            _enabled = value;
+            if (!value)
+            {
+                Reset();
+                ClearExclusion();
+            }
+
+            Log.Info(value ? "Contenido de las ventanas: activado (experimental)." : "Contenido de las ventanas: desactivado.");
+        }
+    }
+
+    /// <summary>
+    /// Excluir las ventanas del lander de cualquier captura de pantalla (para que no se vea a sí mismo). Sin
+    /// esto, o si Windows no lo admite, se ignora la zona donde está dibujado.
+    /// </summary>
+    public bool ExcludeOwnWindows { get; init; } = true;
+
+    /// <summary>Aplicaciones que el usuario ha excluido.</summary>
+    public IReadOnlyCollection<string> UserExcludedApps { get; set; } = [];
+
+    /// <summary>Altura del lander en DIP (de los ajustes).</summary>
+    public double LanderSizeDip { get; set; } = 48;
+
+    // Estadísticas para --stats.
+    public int Scans { get; set; }
+
+    public int Reuses { get; set; }
+
+    public long ScanTicks { get; set; }
+
+    public bool IsCapturing => _duplicator is not null;
+
+    public DesktopDuplicator? Duplicator => _duplicator;
+
+    /// <summary>
+    /// Cuándo necesita volver a ejecutarse: enseguida si hay una lectura en la GPU, cuando toque el próximo
+    /// escaneo, o nunca si no hay nada que mirar.
+    /// </summary>
+    public double NextWake(double now)
+    {
+        if (!_enabled || _targets.Count == 0)
+        {
+            return double.PositiveInfinity;
+        }
+
+        if (_pending is not null)
+        {
+            return now + 1.0 / 60;
+        }
+
+        if (_duplicator is null && now < _retryAt)
+        {
+            return _retryAt;
+        }
+
+        var next = double.PositiveInfinity;
+        foreach (var window in _targets)
+        {
+            if (_states.TryGetValue(window.Handle, out var state))
+            {
+                next = Math.Min(next, state.LastScan + ScanInterval);
+            }
+        }
+
+        return Math.Max(next, now + 1.0 / 30);
+    }
+
+    /// <summary>El dispositivo de Direct3D del render ha cambiado (o ya no hay): la duplicación se rehace.</summary>
+    public void SetRenderDevice(ID3D11Device? device)
+    {
+        if (!ReferenceEquals(device, _renderDevice))
+        {
+            _renderDevice = device;
+            CloseDuplicator();
+        }
+    }
+
+    /// <summary>Los monitores han cambiado.</summary>
+    public void OnMonitorsChanged() => CloseDuplicator();
+
+    /// <summary>Cambia el tamaño del lander: los bordes vistos ya no sirven.</summary>
+    public void OnLanderSizeChanged(double sizeDip)
+    {
+        LanderSizeDip = sizeDip;
+        Reset();
+    }
+
+    /// <summary>
+    /// Mira lo que haga falta según <paramref name="interest"/>. Devuelve true si han cambiado los bordes
+    /// confirmados (hay que reconstruir el terreno).
+    /// </summary>
+    /// <param name="windows">Ventanas que forman terreno, en orden Z.</param>
+    /// <param name="landerRect">Zona que ocupa el lander dibujado, en pantalla.</param>
+    /// <param name="ownWindows">Ventanas del propio lander, para excluirlas de la captura.</param>
+    public bool Update(
+        double now,
+        ContentInterest interest,
+        IReadOnlyList<WindowInfo> windows,
+        IReadOnlyList<MonitorInfo> monitors,
+        Vec2 lander,
+        PixelRect landerRect,
+        long foreground,
+        IReadOnlySet<nint> ownWindows)
+    {
+        if (!_enabled)
+        {
+            return false;
+        }
+
+        UpdateExclusion(ownWindows, now);
+        var monitor = MonitorOf(monitors, lander);
+        SelectTargets(interest, windows, monitors, monitor, lander, foreground);
+
+        foreach (var window in _targets)
+        {
+            if (!_states.TryGetValue(window.Handle, out var state))
+            {
+                state = new WindowState();
+                _states[window.Handle] = state;
+            }
+
+            state.LastWanted = now;
+        }
+
+        var changed = Forget(now, windows);
+        if (_targets.Count == 0 || monitor is null)
+        {
+            if (now - _lastNeeded > CloseAfter)
+            {
+                CloseDuplicator();
+            }
+
+            return Publish() || changed;
+        }
+
+        _lastNeeded = now;
+        if (now < _excludedSince + ExclusionSettle || !EnsureDuplicator(monitor, now))
+        {
+            return Publish() || changed;
+        }
+
+        var duplicator = _duplicator!;
+        duplicator.Poll(now);
+        if (!duplicator.HasFrame)
+        {
+            return Publish() || changed;
+        }
+
+        var scale = monitor.DpiScale;
+        var options = new ContentEdgeOptions
+        {
+            Clearance = (int)Math.Ceiling(LanderSizeDip * scale),
+            MinLength = (int)Math.Ceiling(LanderSizeDip * 0.75 * 3 * scale),
+        };
+
+        // Una lectura encolada en un ciclo anterior: se analiza en cuanto la GPU la termina.
+        if (_pending is { } pending)
+        {
+            if (duplicator.TryFinishRead(_image, out var region))
+            {
+                _pending = null;
+                var window = _targets.Find(w => w.Handle == pending.Handle);
+                if (window is not null && window.Bounds == pending.Bounds && _states.TryGetValue(window.Handle, out var state))
+                {
+                    Analyze(window, state, region, options, landerRect, now);
+                }
+            }
+            else if (!duplicator.IsReading || now - pending.Started > 1)
+            {
+                duplicator.CancelRead();
+                _pending = null;
+            }
+
+            return Publish() || changed;
+        }
+
+        foreach (var window in _targets)
+        {
+            var state = _states[window.Handle];
+            if (now - state.LastScan >= ScanInterval && BeginScan(window, state, duplicator, monitor, now))
+            {
+                break;
+            }
+        }
+
+        return Publish() || changed;
+    }
+
+    /// <summary>
+    /// Primer paso de un escaneo. Si la región no ha cambiado desde el anterior, lo da por hecho sin leer
+    /// nada; si no, encola la lectura. Devuelve true si ha encolado una lectura (una por ciclo).
+    /// </summary>
+    private bool BeginScan(WindowInfo window, WindowState state, DesktopDuplicator duplicator, MonitorInfo monitor, double now)
+    {
+        var region = window.Bounds.Intersect(monitor.Bounds);
+        if (region.IsEmpty)
+        {
+            return false;
+        }
+
+        if (state.LastScan > double.NegativeInfinity && state.ScannedBounds == window.Bounds && duplicator.ChangedFraction(region, state.LastScan) == 0)
+        {
+            state.Tracker.ConfirmUnchanged();
+            state.LastScan = now;
+            Reuses++;
+            return false;
+        }
+
+        if (!duplicator.BeginRead(region))
+        {
+            return false;
+        }
+
+        _pending = new PendingScan(window.Handle, window.Bounds, now);
+        return true;
+    }
+
+    /// <summary>Segundo paso: detecta los bordes en la región leída y los sigue.</summary>
+    private void Analyze(WindowInfo window, WindowState state, PixelRect region, ContentEdgeOptions options, PixelRect landerRect, double now)
+    {
+        var start = Stopwatch.GetTimestamp();
+        var bounds = window.Bounds;
+        _unknown.Clear();
+        _unknownLocal.Clear();
+        if (UsesMask && landerRect.Intersects(region))
+        {
+            _unknown.Add(Offset(landerRect, -region.Left, -region.Top));
+            _unknownLocal.Add(Offset(landerRect, -bounds.Left, -bounds.Top));
+        }
+
+        // Lo que cambia entre escaneos (vídeos, animaciones) no se confirma: el seguimiento compara la franja
+        // de cada borde píxel a píxel. Los rectángulos modificados no sirven para esto: hay aplicaciones
+        // (Electron, por ejemplo) que marcan la ventana entera ante cualquier cambio.
+        _edges.Clear();
+        _detector.Detect(_image, options, _edges, _unknown);
+        state.Tracker.Update(_image, region.Left - bounds.Left, region.Top - bounds.Top, _edges, _unknownLocal);
+        state.LastScan = now;
+        state.ScannedBounds = bounds;
+        ScanTicks += Stopwatch.GetTimestamp() - start;
+        Scans++;
+    }
+
+    /// <summary>Ventanas que mirar ahora, la más interesante primero.</summary>
+    private void SelectTargets(ContentInterest interest, IReadOnlyList<WindowInfo> windows, IReadOnlyList<MonitorInfo> monitors, MonitorInfo? monitor, Vec2 lander, long foreground)
+    {
+        _targets.Clear();
+        if (monitor is null || interest.Need == ContentNeed.None)
+        {
+            return;
+        }
+
+        var height = LanderSizeDip * monitor.DpiScale;
+        switch (interest.Need)
+        {
+            case ContentNeed.Landed:
+            case ContentNeed.Destination:
+                foreach (var window in windows)
+                {
+                    if (window.Handle == interest.Window && IsCandidate(window, monitors, monitor, height))
+                    {
+                        _targets.Add(window);
+                    }
+                }
+
+                break;
+
+            case ContentNeed.ChoosingSoon:
+                AddCandidates(windows, monitors, monitor, height, foreground, MaxWindowsChoosing, near: null);
+                break;
+
+            case ContentNeed.Manual:
+                AddCandidates(windows, monitors, monitor, height, foreground, MaxWindowsManual, near: lander);
+                break;
+        }
+    }
+
+    private void AddCandidates(IReadOnlyList<WindowInfo> windows, IReadOnlyList<MonitorInfo> monitors, MonitorInfo monitor, double height, long foreground, int max, Vec2? near)
+    {
+        // Pilotando, las ventanas alrededor del lander; eligiendo destino, las más grandes. La activa, antes.
+        var reach = new PixelRect(
+            (int)(near?.X - height * 14 ?? int.MinValue / 2), (int)(near?.Y - height * 10 ?? int.MinValue / 2),
+            (int)(near?.X + height * 14 ?? int.MaxValue / 2), (int)(near?.Y + height * 10 ?? int.MaxValue / 2));
+        var candidates = windows
+            .Where(w => w.Bounds.Intersects(reach) && IsCandidate(w, monitors, monitor, height))
+            .OrderByDescending(w => w.Handle == foreground)
+            .ThenByDescending(w => w.Bounds.Intersect(monitor.Bounds).Area)
+            .Take(max);
+        _targets.AddRange(candidates);
+    }
+
+    /// <summary>Del monitor del lander, con sitio para algún borde y sin datos que proteger.</summary>
+    private bool IsCandidate(WindowInfo window, IReadOnlyList<MonitorInfo> monitors, MonitorInfo monitor, double height)
+    {
+        var visible = window.Bounds.Intersect(monitor.Bounds);
+        if (visible.Width < height * 0.75 * 3 || visible.Height < height * 2 || MonitorOf(monitors, window.Bounds.Center)?.Index != monitor.Index)
+        {
+            return false;
+        }
+
+        return !ContentPrivacy.IsExcluded(window.AppId, WindowScanner.GetTitle((nint)window.Handle), UserExcludedApps);
+    }
+
+    /// <summary>Olvida las ventanas que ya no interesan o que han desaparecido.</summary>
+    private bool Forget(double now, IReadOnlyList<WindowInfo> windows)
+    {
+        var changed = false;
+        foreach (var (handle, state) in _states)
+        {
+            if (now - state.LastWanted > ForgetAfter || !windows.Any(w => w.Handle == handle))
+            {
+                changed |= state.Tracker.Confirmed.Any();
+                _states.Remove(handle);
+            }
+        }
+
+        return changed;
+    }
+
+    /// <summary>Recalcula la lista de bordes confirmados. Devuelve true si ha cambiado.</summary>
+    private bool Publish()
+    {
+        var surfaces = new List<ContentSurface>();
+        foreach (var (handle, state) in _states)
+        {
+            foreach (var edge in state.Tracker.Confirmed)
+            {
+                surfaces.Add(new ContentSurface(handle, edge.Id, edge.Left, edge.Right, edge.Y));
+            }
+        }
+
+        if (surfaces.SequenceEqual(_surfaces))
+        {
+            return false;
+        }
+
+        _surfaces = surfaces;
+        return true;
+    }
+
+    private bool UsesMask => !ExcludeOwnWindows || !_exclusionWorks;
+
+    private bool EnsureDuplicator(MonitorInfo monitor, double now)
+    {
+        if (_duplicator is { IsLost: false } current && current.Bounds == monitor.Bounds)
+        {
+            return true;
+        }
+
+        CloseDuplicator();
+        if (now < _retryAt)
+        {
+            return false;
+        }
+
+        _duplicator = DesktopDuplicator.TryCreate(_renderDevice, monitor.Bounds, now);
+        if (_duplicator is null)
+        {
+            _retryAt = now + RetryAfterFailure;
+            return false;
+        }
+
+        // Los escaneos anteriores eran de otra duplicación: no se puede saber qué ha cambiado desde entonces.
+        foreach (var state in _states.Values)
+        {
+            state.LastScan = double.NegativeInfinity;
+        }
+
+        return true;
+    }
+
+    private void UpdateExclusion(IReadOnlySet<nint> ownWindows, double now)
+    {
+        if (!ExcludeOwnWindows || !_exclusionWorks)
+        {
+            return;
+        }
+
+        foreach (var handle in ownWindows)
+        {
+            if (_excluded.Contains(handle))
+            {
+                continue;
+            }
+
+            if (Native.SetWindowDisplayAffinity(handle, WDA_EXCLUDEFROMCAPTURE))
+            {
+                _excluded.Add(handle);
+                _excludedSince = now;
+            }
+            else
+            {
+                // Windows 10 anterior a 2004: se ignorará la zona del lander en cada imagen.
+                _exclusionWorks = false;
+                Log.Info($"Contenido: no se pueden excluir las ventanas del lander de la captura (error {Marshal.GetLastPInvokeError()}); se ignorará su zona.");
+                ClearExclusion();
+                return;
+            }
+        }
+
+        _excluded.RemoveWhere(h => !ownWindows.Contains(h));
+    }
+
+    private void ClearExclusion()
+    {
+        foreach (var handle in _excluded)
+        {
+            Native.SetWindowDisplayAffinity(handle, WDA_NONE);
+        }
+
+        _excluded.Clear();
+    }
+
+    private void Reset()
+    {
+        _states.Clear();
+        _surfaces = [];
+        CloseDuplicator();
+    }
+
+    private void CloseDuplicator()
+    {
+        _duplicator?.Dispose();
+        _duplicator = null;
+        _pending = null;
+    }
+
+    private static MonitorInfo? MonitorOf(IReadOnlyList<MonitorInfo> monitors, Vec2 point)
+    {
+        MonitorInfo? best = null;
+        var bestDistance = double.MaxValue;
+        foreach (var monitor in monitors)
+        {
+            var distance = monitor.Bounds.DistanceSquaredTo(point);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = monitor;
+            }
+        }
+
+        return best;
+    }
+
+    private static PixelRect Offset(PixelRect rect, int dx, int dy) => new(rect.Left + dx, rect.Top + dy, rect.Right + dx, rect.Bottom + dy);
+
+    public void Dispose()
+    {
+        Reset();
+        ClearExclusion();
+    }
+
+    private readonly record struct PendingScan(long Handle, PixelRect Bounds, double Started);
+
+    private sealed class WindowState
+    {
+        public ContentEdgeTracker Tracker { get; } = new();
+
+        public double LastScan { get; set; } = double.NegativeInfinity;
+
+        public double LastWanted { get; set; }
+
+        public PixelRect ScannedBounds { get; set; }
+    }
+}

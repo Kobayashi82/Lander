@@ -205,6 +205,33 @@ public class ContentEdgeDetectorTests
     }
 
     [Fact]
+    public void Unknown_zone_like_the_lander_itself_does_not_break_the_edge_below_it()
+    {
+        // El lander dibujado encima del borde: tapa la línea y llena de «ruido» la zona de encima.
+        var image = Canvas(900, 400, 250);
+        FillRect(image, 100, 250, 700, 1, 150);
+        DrawPhoto(image, 420, 196, 50, 60, seed: 9);
+        var lander = new Geometry.PixelRect(410, 190, 480, 262);
+
+        Assert.DoesNotContain(Detect(image), e => e.Left < 420 && e.Right > 470);
+
+        var edge = Assert.Single(new ContentEdgeDetector().Detect(image, Options, [lander]));
+        Assert.Equal(250, edge.Y);
+        Assert.Equal((100, 800), (edge.Left, edge.Right));
+        Assert.Equal(100, edge.Contrast);
+    }
+
+    [Fact]
+    public void Unknown_zone_alone_is_never_an_edge()
+    {
+        var image = Canvas(900, 400, 250);
+        DrawText(image, 100, 300, 700, 14, seed: 4);
+        var unknown = new Geometry.PixelRect(300, 100, 300 + Options.MinLength + 40, 400);
+
+        Assert.Empty(new ContentEdgeDetector().Detect(image, Options, [unknown]));
+    }
+
+    [Fact]
     public void Bgra_is_converted_to_luma_respecting_the_pitch()
     {
         const int width = 37;

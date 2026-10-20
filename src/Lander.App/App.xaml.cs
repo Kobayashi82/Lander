@@ -113,6 +113,7 @@ public partial class App : Application
             DemoPilot = e.Args.Contains("--demo-manual") || e.Args.Contains("--demo-race") ? new DemoPilot() : null,
             DemoRace = e.Args.Contains("--demo-race"),
             SoftwareRendering = e.Args.Contains("--software"),
+            ShowInCaptures = e.Args.Contains("--show-in-captures"),
 #if DEBUG
             Statistics = true,
 #else

@@ -91,6 +91,14 @@ public sealed partial class Autopilot
         _airborneSeen = body.IsFlying;
         _hasFlown = true;
         _napping = false;
+
+        // Paseos seguidos (el salto al vacío empieza con un paseo hasta el borde y no cuenta).
+        _strollStreak = purpose switch
+        {
+            FlightPurpose.Stroll => _strollStreak + 1,
+            FlightPurpose.EdgeDrop => _strollStreak,
+            _ => 0,
+        };
         _phase = FlightPhase.Transit;
         _arcStarted = false;
         _flipDone = false;
