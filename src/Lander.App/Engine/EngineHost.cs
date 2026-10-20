@@ -59,6 +59,7 @@ internal sealed unsafe partial class EngineHost : IDisposable
     private readonly LanderScene _scene = new();
     private ContentVision _content = null!;
     private List<WindowInfo> _lastWindows = [];
+    private ContentNeed _lastContentNeed;
 
     private LanderGame _game = null!;
     private LayeredWindow _window = null!;
@@ -305,6 +306,7 @@ internal sealed unsafe partial class EngineHost : IDisposable
         _content = new ContentVision
         {
             ExcludeOwnWindows = !ShowInCaptures,
+            Verbose = Statistics,
             UserExcludedApps = _settings.ContentExcludedApps,
             LanderSizeDip = _settings.LanderSize,
             Enabled = _settings.LandOnContent,
@@ -474,7 +476,7 @@ internal sealed unsafe partial class EngineHost : IDisposable
 
         if (UpdateContent(now))
         {
-            RebuildWorld(now);
+            RebuildTerrain(now);
         }
 
         UpdateWind(elapsed);
@@ -594,11 +596,15 @@ internal sealed unsafe partial class EngineHost : IDisposable
         }
 
         _lastWindows = windows;
-        _world = TerrainBuilder.Build(_monitors, windows, new TerrainOptions { LanderHeightDip = _settings.LanderSize }, now, _content.Surfaces);
+        RebuildTerrain(now);
         _terrainDirty = false;
         _lastScan = now;
         _nextSafetyScan = now + 2;
     }
+
+    /// <summary>Vuelve a construir el terreno con las ventanas ya conocidas (han cambiado los bordes de contenido).</summary>
+    private void RebuildTerrain(double now) =>
+        _world = TerrainBuilder.Build(_monitors, _lastWindows, new TerrainOptions { LanderHeightDip = _settings.LanderSize }, now, _content.Surfaces);
 
     /// <summary>
     /// Bordes del contenido de las ventanas (opción experimental): solo se mira la pantalla cuando el juego
@@ -611,12 +617,21 @@ internal sealed unsafe partial class EngineHost : IDisposable
             return false;
         }
 
+        // Zona donde puede haber algo dibujado por el lander (el cuerpo, el polvo y las chispas al posarse, los
+        // puntos): solo se usa si sus ventanas no se pueden excluir de la captura.
         var body = _game.Body;
         var reach = body.Height;
         var landerRect = new PixelRect(
-            (int)(body.Position.X - reach), (int)(body.Position.Y - reach * 1.2),
-            (int)(body.Position.X + reach), (int)(body.Position.Y + reach));
-        var changed = _content.Update(now, _game.ContentInterest, _lastWindows, _monitors, body.Position, landerRect, _sensors.ActiveWindow, _ownWindows);
+            (int)(body.Position.X - reach * 2.5), (int)(body.Position.Y - reach * 2.5),
+            (int)(body.Position.X + reach * 2.5), (int)(body.Position.Y + reach));
+        var interest = _game.ContentInterest;
+        if (Statistics && _lastContentNeed == ContentNeed.Landed && interest.Need != ContentNeed.Landed)
+        {
+            Log.Stats($"Deja el contenido: {body.State}, velocidad ({body.Velocity.X:0}, {body.Velocity.Y:0}), {(_content.Surfaces.Count == 0 ? "sin bordes" : $"{_content.Surfaces.Count} bordes")}.");
+        }
+
+        _lastContentNeed = interest.Need;
+        var changed = _content.Update(now, interest, _lastWindows, _monitors, body.Position, landerRect, _sensors.ActiveWindow, _ownWindows);
         if (changed && Statistics)
         {
             var listed = _content.Surfaces.Select(s => _windowBounds.TryGetValue((nint)s.WindowHandle, out var w)
@@ -748,9 +763,9 @@ internal sealed unsafe partial class EngineHost : IDisposable
         {
             var duplicator = _content.Duplicator;
             var reads = duplicator?.Reads ?? 0;
-            Log.Stats($"   contenido: {(_content.IsCapturing ? "capturando" : "sin captura")}, {_content.Scans} escaneos ({Stopwatch.GetElapsedTime(0, _content.ScanTicks).TotalMilliseconds / Math.Max(1, _content.Scans):0.00} ms, lectura {Stopwatch.GetElapsedTime(0, duplicator?.ReadTicks ?? 0).TotalMilliseconds / Math.Max(1, reads):0.00} ms), {_content.Reuses} sin cambios, {_content.Surfaces.Count} bordes, interés {_game?.ContentInterest.Need}");
-            _content.Scans = _content.Reuses = 0;
-            _content.ScanTicks = 0;
+            Log.Stats($"   contenido: {(_content.IsCapturing ? "capturando" : "sin captura")}, {_content.Scans} escaneos ({Stopwatch.GetElapsedTime(0, _content.ScanTicks).TotalMilliseconds / Math.Max(1, _content.Scans):0.00} ms, lectura {Stopwatch.GetElapsedTime(0, duplicator?.ReadTicks ?? 0).TotalMilliseconds / Math.Max(1, reads):0.00} ms), {_content.Reuses} sin cambios, {_content.Follows} seguimientos ({Stopwatch.GetElapsedTime(0, _content.FollowTicks).TotalMilliseconds / Math.Max(1, _content.Follows):0.00} ms), {_content.Surfaces.Count} bordes, interés {_game?.ContentInterest.Need}");
+            _content.Scans = _content.Reuses = _content.Follows = 0;
+            _content.ScanTicks = _content.FollowTicks = 0;
             if (duplicator is not null)
             {
                 duplicator.Reads = 0;
@@ -1041,8 +1056,10 @@ internal sealed unsafe partial class EngineHost : IDisposable
 
         _window.SetClickThrough(!((_settings.AllowDragging && over) || _pressed || _dragging));
 
-        var near = _sensors.Cursor is { } c && Vec2.Distance(c, body.Position) < body.Height * 6;
-        SetRawInput(near && !_hidden);
+        // La rueda interesa cerca del lander (viento) y, posado en el contenido de una ventana, sobre ella (scroll).
+        var near = IsNearLander(_sensors.Cursor);
+        var onContent = _content.Enabled && _game.ContentInterest.Need == ContentNeed.Landed;
+        SetRawInput((near || onContent) && !_hidden);
         UpdateHitTarget(_sensors.Cursor is { } pointer && Vec2.Distance(pointer, body.Position) < body.Height * 3);
     }
 
@@ -1253,11 +1270,27 @@ internal sealed unsafe partial class EngineHost : IDisposable
         }
 
         var mouse = (RAWMOUSE*)(buffer + sizeof(RAWINPUTHEADER));
-        if ((mouse->usButtonFlags & (RI_MOUSE_WHEEL | RI_MOUSE_HWHEEL)) != 0)
+        if ((mouse->usButtonFlags & (RI_MOUSE_WHEEL | RI_MOUSE_HWHEEL)) == 0 || !Native.GetCursorPos(out var point))
+        {
+            return;
+        }
+
+        var cursor = new Vec2(point.X, point.Y);
+        if (IsNearLander(cursor))
         {
             _wheelEnergy += Math.Abs((short)mouse->usButtonData) / 120.0;
         }
+
+        // Scroll en la ventana sobre cuyo contenido está posado: hay que seguirlo ya, no al siguiente ciclo.
+        var window = Native.GetAncestor(Native.WindowFromPoint(point), GA_ROOT);
+        if (_content.NotifyWheel(Now, window))
+        {
+            _tickSoon = true;
+        }
     }
+
+    private bool IsNearLander(Vec2? cursor) =>
+        cursor is { } c && Vec2.Distance(c, _game.Body.Position) < _game.Body.Height * 6;
 
     private void UpdateWind(double elapsed)
     {

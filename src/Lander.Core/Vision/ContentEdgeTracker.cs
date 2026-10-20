@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Lander.Core.Geometry;
 
 namespace Lander.Core.Vision;
@@ -76,6 +77,9 @@ public sealed class ContentEdgeTracker
     /// </summary>
     public const int IdentityRows = 4;
 
+    /// <summary>Desplazamiento máximo entre dos escaneos para reconocer un borde que se ha movido con el scroll.</summary>
+    public const int MaxRematchShift = 600;
+
     /// <summary>Muestras por fila de la franja como mucho.</summary>
     private const int MaxBandColumns = 160;
 
@@ -104,10 +108,13 @@ public sealed class ContentEdgeTracker
         ArgumentNullException.ThrowIfNull(image);
         ArgumentNullException.ThrowIfNull(detected);
 
-        var next = new List<TrackedEdge>(detected.Count);
         var used = new bool[_edges.Count];
-        foreach (var found in detected)
+        var matches = new TrackedEdge?[detected.Count];
+
+        // Primero, los que siguen en su sitio (±1 fila).
+        for (var d = 0; d < detected.Count; d++)
         {
+            var found = detected[d];
             var y = found.Y + offsetY;
             var left = found.Left + offsetX;
             var right = found.Right + offsetX;
@@ -130,11 +137,70 @@ public sealed class ContentEdgeTracker
                 }
             }
 
-            TrackedEdge edge;
-            if (match >= 0 && BandDifference(_edges[match], image, offsetX, offsetY, y - _edges[match].Y, unknown, maxRow: IdentityRows) <= ChangedThreshold)
+            if (match >= 0)
             {
                 used[match] = true;
-                edge = _edges[match];
+                if (BandDifference(_edges[match], image, offsetX, offsetY, y - _edges[match].Y, unknown, maxRow: IdentityRows) <= ChangedThreshold)
+                {
+                    matches[d] = _edges[match];
+                }
+            }
+        }
+
+        // Después, los que se han desplazado (scroll entre dos escaneos): su franja entera debe encajar. Entre
+        // los que encajan, el más cercano: en una página repetitiva (filas de una tabla) encajan varios y lo
+        // prudente es suponer el desplazamiento más pequeño.
+        for (var d = 0; d < detected.Count; d++)
+        {
+            if (matches[d] is not null)
+            {
+                continue;
+            }
+
+            var found = detected[d];
+            var y = found.Y + offsetY;
+            var left = found.Left + offsetX;
+            var right = found.Right + offsetX;
+            var match = -1;
+            var bestDistance = int.MaxValue;
+            var bestDifference = double.MaxValue;
+            for (var i = 0; i < _edges.Count; i++)
+            {
+                var old = _edges[i];
+                var overlap = Math.Min(old.Right, right) - Math.Max(old.Left, left);
+                var distance = Math.Abs(old.Y - y);
+                if (used[i] || old.Rising != found.Rising || distance > MaxRematchShift || distance > bestDistance
+                    || overlap < 0.6 * Math.Min(old.Length, right - left))
+                {
+                    continue;
+                }
+
+                var difference = BandDifference(old, image, offsetX, offsetY, y - old.Y, unknown);
+                if (difference <= ChangedThreshold && (distance < bestDistance || difference < bestDifference))
+                {
+                    bestDistance = distance;
+                    bestDifference = difference;
+                    match = i;
+                }
+            }
+
+            if (match >= 0)
+            {
+                used[match] = true;
+                matches[d] = _edges[match];
+            }
+        }
+
+        var next = new List<TrackedEdge>(detected.Count);
+        for (var d = 0; d < detected.Count; d++)
+        {
+            var found = detected[d];
+            var y = found.Y + offsetY;
+            var left = found.Left + offsetX;
+            var right = found.Right + offsetX;
+            var edge = matches[d];
+            if (edge is not null)
+            {
                 edge.Y = y;
                 edge.Left = left;
                 edge.Right = right;
@@ -143,11 +209,6 @@ public sealed class ContentEdgeTracker
             }
             else
             {
-                if (match >= 0)
-                {
-                    used[match] = true;
-                }
-
                 edge = new TrackedEdge(_nextId++, y, left, right, found.Rising, found.Contrast) { Hits = 1 };
             }
 
@@ -163,9 +224,27 @@ public sealed class ContentEdgeTracker
     {
         foreach (var edge in _edges)
         {
-            edge.Y += dy;
-            edge.BandTop += dy;
+            Shift(edge, dy);
         }
+    }
+
+    /// <summary>Desplaza un borde <paramref name="dy"/> píxeles.</summary>
+    public static void Shift(TrackedEdge edge, int dy)
+    {
+        ArgumentNullException.ThrowIfNull(edge);
+        edge.Y += dy;
+        edge.BandTop += dy;
+    }
+
+    /// <summary>
+    /// Vuelve a tomar la franja de un borde de una imagen nueva (tras medir el scroll), para que la plantilla
+    /// no se quede atrás si el contenido de alrededor cambia poco a poco.
+    /// </summary>
+    public static void Refresh(TrackedEdge edge, GrayImage image, int offsetX, int offsetY, IReadOnlyList<PixelRect>? unknown = null)
+    {
+        ArgumentNullException.ThrowIfNull(edge);
+        ArgumentNullException.ThrowIfNull(image);
+        CaptureBand(edge, image, offsetX, offsetY, unknown);
     }
 
     /// <summary>
@@ -202,6 +281,8 @@ public sealed class ContentEdgeTracker
     /// <param name="maxRow">
     /// Compara solo hasta esa fila relativa a la superficie (sin incluir); por defecto, la franja entera.
     /// </param>
+    /// <param name="rowStride">Compara solo una de cada tantas filas (búsquedas rápidas).</param>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     public static double BandDifference(
         TrackedEdge edge,
         GrayImage image,
@@ -210,17 +291,23 @@ public sealed class ContentEdgeTracker
         int dy,
         IReadOnlyList<PixelRect>? unknown = null,
         int columnStride = 1,
-        int maxRow = BandBelow)
+        int maxRow = BandBelow,
+        int rowStride = 1)
     {
         ArgumentNullException.ThrowIfNull(edge);
         ArgumentNullException.ThrowIfNull(image);
         columnStride = Math.Max(1, columnStride);
+        rowStride = Math.Max(1, rowStride);
         var rows = Math.Clamp(edge.Y + maxRow - edge.BandTop, 0, edge.BandRows);
 
         long sum = 0;
         var samples = 0;
         var pixels = image.Pixels;
-        for (var row = 0; row < rows; row++)
+        var width = image.Width;
+        var hasUnknown = unknown is { Count: > 0 };
+        var valid = edge.BandValid;
+        var columns = edge.BandColumns;
+        for (var row = 0; row < rows; row += rowStride)
         {
             var localY = edge.BandTop + row + dy;
             var imageY = localY - offsetY;
@@ -229,13 +316,13 @@ public sealed class ContentEdgeTracker
                 continue;
             }
 
-            var line = pixels.Slice(imageY * image.Width, image.Width);
-            var band = edge.Band.AsSpan(row * edge.BandColumns, edge.BandColumns);
-            for (var col = 0; col < edge.BandColumns; col += columnStride)
+            var line = pixels.Slice(imageY * width, width);
+            var band = edge.Band.AsSpan(row * columns, columns);
+            for (var col = 0; col < columns; col += columnStride)
             {
                 var localX = edge.BandLeft + col * edge.BandStep;
                 var imageX = localX - offsetX;
-                if ((uint)imageX < (uint)image.Width && edge.BandValid[col] && !IsUnknown(unknown, localX, localY))
+                if ((uint)imageX < (uint)width && valid[col] && !(hasUnknown && IsUnknown(unknown!, localX, localY)))
                 {
                     sum += Math.Abs(line[imageX] - band[col]);
                     samples++;
@@ -243,20 +330,15 @@ public sealed class ContentEdgeTracker
             }
         }
 
-        var expected = rows * ((edge.BandColumns + columnStride - 1) / columnStride);
+        var expected = ((rows + rowStride - 1) / rowStride) * ((columns + columnStride - 1) / columnStride);
         return samples * 2 < expected || samples == 0 ? double.PositiveInfinity : (double)sum / samples;
     }
 
-    private static bool IsUnknown(IReadOnlyList<PixelRect>? unknown, int x, int y)
+    private static bool IsUnknown(IReadOnlyList<PixelRect> unknown, int x, int y)
     {
-        if (unknown is null)
+        for (var i = 0; i < unknown.Count; i++)
         {
-            return false;
-        }
-
-        foreach (var rect in unknown)
-        {
-            if (rect.Contains(x, y))
+            if (unknown[i].Contains(x, y))
             {
                 return true;
             }

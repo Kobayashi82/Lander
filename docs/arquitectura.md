@@ -106,6 +106,9 @@ trampas.
   `--demo-race` y los tests de la carrera.
 - **Settings**: modelo de ajustes y almacenamiento JSON con escritura atómica (archivo temporal y
   reemplazo) y serialización generada en compilación.
+- **Vision**: bordes del contenido de las ventanas (opción experimental, ver «Contenido de las ventanas»):
+  detector, seguimiento entre escaneos, medida del scroll y reglas de privacidad. Recibe píxeles en escala
+  de grises; no sabe nada de Windows.
 
 ```mermaid
 stateDiagram-v2
@@ -130,6 +133,7 @@ Engine/      EngineHost: bucle del motor, sucesos de Windows, efectos y sonidos.
 Platform/    Monitores, escáner de ventanas, hooks de eventos, atajos, papelera, escritorios
              virtuales, estado del sistema e inicio con Windows.
 Rendering/   Ventana por capas, aspectos (Skins/), partículas, bocadillos, HUD y marcadores.
+Vision/      Duplicación del escritorio y qué contenido mirar en cada momento (opción experimental).
 Audio/       Sonidos sintetizados y mezclador sobre waveOut.
 UI/          Icono de bandeja, menú, ventana de ajustes (Fluent) y herramientas de vista previa.
 Services/    Ajustes, registro, instancia única y rutas.
@@ -218,6 +222,81 @@ bandeja se generan con el mismo código.
   ha cambiado de verdad. Además hay un escaneo de seguridad cada dos segundos.
 - Mientras se arrastra una ventana se reescanea a 60 Hz; el resto del tiempo, solo cuando algo cambia.
 
+## Contenido de las ventanas (experimental)
+
+Con la opción **Posarse en el contenido** el lander también aterriza en bordes horizontales claros dentro
+de las ventanas y los sigue cuando se hace scroll. Está desactivada por defecto.
+
+```mermaid
+flowchart LR
+    G[LanderGame.ContentInterest] --> CV[ContentVision]
+    D[DesktopDuplicator<br/>DXGI, en la GPU] --> CV
+    CV -->|región en gris| DET[ContentEdgeDetector]
+    DET --> TR[ContentEdgeTracker]
+    TR -->|tira alrededor del borde| SM[ScrollMatcher]
+    TR -->|bordes confirmados| TB[TerrainBuilder]
+    TB --> W[World: PlatformKind.Content]
+```
+
+**Cuándo se mira.** `LanderGame.ContentInterest` dice qué hace falta: nada (casi siempre), los segundos
+previos a elegir destino (`ChoosingSoon`, 1,6 s: da para dos escaneos), el borde hacia el que vuela o
+sobre el que está posado, y las ventanas de alrededor mientras se pilota a mano. `ContentVision` traduce
+eso en ventanas concretas del monitor del lander (primero la activa), como mucho dos escaneos por segundo
+por ventana, y deja de capturar unos segundos después de que deje de hacer falta.
+
+**Captura.** `DesktopDuplicator` usa la duplicación del escritorio de DXGI sobre el mismo `ID3D11Device`
+que el render si está en el mismo adaptador (si no, o con `--software`, crea uno). Ve exactamente lo que
+ve el usuario, sin aviso amarillo y con el contenido protegido en negro. Cada fotograma nuevo
+(`AcquireNextFrame` sin espera) se copia en la GPU a una textura propia, de modo que cualquier región se
+puede leer más tarde aunque la pantalla no cambie; se guardan también los rectángulos modificados. Leer es
+asíncrono: en un ciclo se encola la copia de la región a una textura de lectura y en el siguiente se mapea
+con `DoNotWait`, así que el motor nunca espera a la GPU. Si los rectángulos modificados dicen que la
+región no ha cambiado desde el escaneo anterior, no se lee nada: cuenta como haber visto lo mismo. Las
+ventanas del lander se excluyen de cualquier captura (`WDA_EXCLUDEFROMCAPTURE`) mientras la opción está
+activa; si Windows no lo admite, o con `--show-in-captures`, se pasa al detector la zona del lander como
+«desconocida».
+
+**Detección.** `ContentEdgeDetector` recorre la imagen una vez. Por cada fila calcula con `Vector128`,
+de 16 en 16 píxeles, tres máscaras de bits: salto fuerte de brillo respecto a la fila de encima (24 de
+255 o más; hacia más claro y hacia más oscuro por separado) y «ocupado» (cualquier variación de 10 o más
+con la fila de encima o con el vecino). Un candidato es un tramo de al menos tres anchos del lander en una
+de las dos primeras, con huecos de 2 px como mucho; vale la parte cuyas filas de encima, en la altura del
+lander, no tienen nada ocupado (se guardan en un búfer circular de máscaras). Así el texto no da bordes
+(entre letra y letra hay fondo, y encima de un renglón hay otro) ni los separadores de una tabla con texto
+encima, y una línea fina solo da su cara de arriba. Se afinó con capturas reales de Wikipedia, GitHub, MDN,
+BBC, VS Code y un vídeo; los tests reproducen esos casos con imágenes sintéticas.
+
+**Seguimiento.** `ContentEdgeTracker` guarda de cada borde una franja de píxeles (6 filas por encima y 18
+por debajo, hasta 160 columnas). Un borde se confirma cuando aparece en dos escaneos seguidos con la parte
+alta de su franja igual (diferencia media de 6 o menos): lo que se repinta (vídeo, animaciones) no se
+confirma, y un texto que cambia debajo no le hace perder la identidad. Si un borde ya no está en su sitio,
+se busca entre los nuevos uno cuya franja entera encaje desplazada (la página se ha movido entre dos
+escaneos) y conserva su identificador. Los bordes se guardan relativos a su ventana; el terreno los
+convierte en `PlatformKind.Content` con un identificador que combina ventana y borde, con las mismas reglas
+de oclusión que las barras de título (comprobando toda la altura libre de encima), y también en ventanas
+maximizadas.
+
+**Scroll.** Posado sobre un borde, cada vez que los rectángulos modificados tocan su franja (o gira la rueda
+sobre esa ventana, que llega por raw input y despierta al motor) se lee una tira alrededor con ±160 DIP de
+margen y `ScrollMatcher` busca el desplazamiento: todas las posiciones con una de cada ocho columnas y una
+de cada dos filas, y luego afina las cuatro mejores con todo, con una ligera preferencia por el
+desplazamiento anterior (en una tabla de filas iguales, varias posiciones encajan igual). El borde se
+mueve y, provisionalmente, el resto de la página con él hasta el siguiente escaneo. Mientras dura el
+scroll se mide a cada fotograma y no se hacen escaneos completos. Si no encaja en ningún sitio (ha salido
+de la vista o la página ha cambiado), el borde desaparece y el lander se cae y se recupera como cuando se
+cierra una ventana. La física sigue a la plataforma como a una ventana que se mueve: si la página sube, lo
+lleva; si baja más deprisa que la gravedad, se separa.
+
+**Comportamiento.** El piloto automático elige bordes de contenido de vez en cuando: cada ventana reparte
+su peso entre sus bordes (crece con la raíz de cuántos tiene) y los de la ventana activa valen casi el
+doble. En manual son plataformas normales y puntúan como mínimo como una ventana estrecha (×3).
+
+**Privacidad.** `ContentPrivacy` excluye por nombre de proceso los gestores de contraseñas, autenticadores
+y pantallas de credenciales de Windows, y por título las ventanas de banca, pagos, contraseñas, inicios de
+sesión y navegación privada, además de las aplicaciones que añada el usuario. Una ventana sin proceso
+conocido tampoco se mira. Las imágenes viven en un búfer en memoria que se reutiliza: nunca se guardan ni
+se envían.
+
 ## Integración con Windows
 
 | Función | Cómo |
@@ -232,6 +311,7 @@ bandeja se generan con el mismo código.
 | Papelera | `SHChangeNotifyRegister` sobre la papelera y `SHQueryRecycleBin`; la posición del icono se pide a la vista del escritorio (`IShellWindows` → `IShellBrowser` → `IFolderView`). |
 | Escritorios virtuales | `IVirtualDesktopManager` mueve las ventanas del lander al escritorio activo. |
 | Viento | Raw input del ratón (solo mientras el cursor está cerca del lander) para notar la rueda. |
+| Contenido de las ventanas | Duplicación del escritorio de DXGI (`IDXGIOutput5::DuplicateOutput1`) y `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` en las ventanas propias; raw input de la rueda también mientras está posado en el contenido de una ventana. |
 | Inicio con Windows | Clave `Run` del usuario. |
 | DPI | Manifiesto *Per-Monitor V2*: todo el motor trabaja en píxeles físicos. |
 
@@ -251,6 +331,9 @@ En un equipo de 16 núcleos con dos monitores (3440×1440 y 1920×1080):
 | Posado, usuario ausente | ~0,05 % de un núcleo |
 | Dibujo de un fotograma | 0,8 ms |
 | Escaneo del escritorio | 0,15 ms |
+| Contenido: escaneo de una ventana de 1200×800 (gris + bordes + seguimiento) | 0,3 + 0,3 ms |
+| Contenido: monitor entero de 3440×1440 | 1,6 + 1,4 ms |
+| Contenido: medir el scroll de un borde de 800 px (±160 px) | 0,4 ms |
 
 Con `--demo` y una compilación Debug, el motor registra cada diez segundos sus ciclos, dibujos,
 escaneos y eventos por segundo.
@@ -270,6 +353,11 @@ escaneos y eventos por segundo.
   más de 4000 aterrizajes sin un accidente, sin tocar el techo ni quedarse sin combustible (con los
   despistes desactivados).
 - `--preview` y `--preview-settings` permiten revisar todo el arte y la interfaz sin volar.
+- Contenido de las ventanas: detector sobre imágenes sintéticas que reproducen capturas reales (títulos
+  subrayados, tablas, fotos, texto, temas oscuros, bordes suaves, huecos), seguimiento (confirmación,
+  vídeo, cambios debajo del borde, scroll entre escaneos), medida del scroll, terreno (oclusión, ventanas
+  maximizadas, barra de tareas), privacidad, puntuación y el lander acompañando a una página que se
+  desplaza o cayendo cuando el borde sale de la vista.
 
 ## Decisiones respecto al documento de diseño
 
@@ -288,3 +376,8 @@ escaneos y eventos por segundo.
 - Solo se publica para x64 (las estructuras de interop asumen alineación de 64 bits).
 - Otras ventanas «siempre encima» pueden quedar por encima del lander; cada pocos segundos recupera su
   sitio sin pelearse por él.
+- Contenido de las ventanas (experimental): solo se mira el monitor donde está el lander, y no los
+  monitores girados. Un salto de página (Inicio, Av Pág) mayor de 160 DIP entre dos lecturas no se puede
+  seguir: el lander se cae. Los temas muy oscuros dan pocos bordes (contraste bajo) y las aplicaciones que
+  repintan la ventana entera ante cualquier cambio (Electron) obligan a releerla más a menudo. Con la
+  opción activada el lander no sale en capturas ni grabaciones de pantalla (salvo `--show-in-captures`).

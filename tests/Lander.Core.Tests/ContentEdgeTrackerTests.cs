@@ -129,6 +129,39 @@ public class ContentEdgeTrackerTests
     }
 
     [Fact]
+    public void Edge_that_scrolled_between_scans_keeps_its_id()
+    {
+        // La página se ha movido 140 px entre dos escaneos sin que nadie midiera el scroll.
+        var tracker = new ContentEdgeTracker();
+        Scan(tracker, Page(300));
+        Scan(tracker, Page(300));
+        var id = tracker.Edges[0].Id;
+
+        Scan(tracker, Page(160));
+
+        var edge = Assert.Single(tracker.Confirmed);
+        Assert.Equal(id, edge.Id);
+        Assert.Equal(160, edge.Y);
+    }
+
+    [Fact]
+    public void Repetitive_page_that_jumps_keeps_identities_in_order()
+    {
+        // Secciones idénticas cada 208 px y un salto de 260: lo prudente es suponer que todo se ha movido
+        // 52 px (al vecino), nunca cruzar identificadores.
+        var tracker = new ContentEdgeTracker();
+        Scan(tracker, Sections(0));
+        Scan(tracker, Sections(0));
+        var before = tracker.Edges.OrderBy(e => e.Y).Select(e => e.Id).ToList();
+
+        Scan(tracker, Sections(260));
+
+        var after = tracker.Edges.Where(e => before.Contains(e.Id)).OrderBy(e => e.Y).Select(e => e.Id).ToList();
+        Assert.NotEmpty(after);
+        Assert.Equal(after.OrderBy(id => before.IndexOf(id)), after);
+    }
+
+    [Fact]
     public void Band_difference_finds_the_scroll_offset()
     {
         var tracker = new ContentEdgeTracker();
@@ -148,6 +181,26 @@ public class ContentEdgeTrackerTests
         var image = Canvas(900, 600, 250);
         FillRect(image, 100, lineY, 700, 2, 180);
         DrawText(image, 120, lineY + 10, 600, 12, seed: 5);
+        return image;
+    }
+
+    /// <summary>Página repetitiva: secciones iguales (título, regla, párrafo) cada 208 px.</summary>
+    private static GrayImage Sections(int shift)
+    {
+        var image = Canvas(900, 1400, 250);
+        for (var top = -2000 + shift; top < 1400; top += 208)
+        {
+            if (top - 60 < 0 || top + 60 > 1400)
+            {
+                continue;
+            }
+
+            DrawText(image, 100, top - 40, 160, 20, seed: 1);
+            FillRect(image, 100, top, 700, 2, 128);
+            DrawText(image, 100, top + 16, 650, 12, seed: 2);
+            DrawText(image, 100, top + 36, 650, 12, seed: 3);
+        }
+
         return image;
     }
 

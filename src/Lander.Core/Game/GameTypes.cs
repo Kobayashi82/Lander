@@ -99,7 +99,11 @@ public enum ContentNeed
 }
 
 /// <summary>Qué contenido necesita ver el lander y de qué ventana (0 si no es de una concreta).</summary>
-public readonly record struct ContentInterest(ContentNeed Need, long Window = 0);
+/// <param name="Need">Para qué.</param>
+/// <param name="Window">Ventana que hay que seguir (posado o volando hacia su contenido).</param>
+/// <param name="Owner">Plataforma de contenido concreta (posado o destino), o 0.</param>
+/// <param name="Piloting">Pilotando a mano: además, las ventanas de alrededor.</param>
+public readonly record struct ContentInterest(ContentNeed Need, long Window = 0, long Owner = 0, bool Piloting = false);
 
 /// <summary>Sucesos puntuales del sistema a los que el lander reacciona.</summary>
 public abstract record SystemEvent;

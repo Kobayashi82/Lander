@@ -114,6 +114,7 @@ public class ContentTerrainTests
         Assert.False(Platform.IsContentOwner(hwnd));
         Assert.False(Platform.IsContentOwner(Platform.GroundOwnerId(0, 0)));
         Assert.Equal(hwnd, Platform.ContentWindow(id));
+        Assert.Equal(5, Platform.ContentEdgeId(id));
     }
 
     [Fact]
@@ -170,7 +171,7 @@ public class ContentTerrainTests
 
         var content = world.SegmentsOf(Platform.ContentOwnerId(1, 3))[0];
         game.Body.PlaceOn(content, content.CenterX, 0);
-        Assert.Equal(new ContentInterest(ContentNeed.Landed, 1), game.ContentInterest);
+        Assert.Equal(new ContentInterest(ContentNeed.Landed, 1, content.OwnerId), game.ContentInterest);
 
         game.SetPaused(true);
         Assert.Equal(ContentNeed.Landed, game.ContentInterest.Need);

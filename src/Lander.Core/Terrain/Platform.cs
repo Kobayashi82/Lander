@@ -77,4 +77,7 @@ public sealed record Platform(
 
     /// <summary>Ventana de un identificador de <see cref="ContentOwnerId"/>.</summary>
     public static long ContentWindow(long ownerId) => ownerId & 0xFFFF_FFFFL;
+
+    /// <summary>Borde de un identificador de <see cref="ContentOwnerId"/>.</summary>
+    public static int ContentEdgeId(long ownerId) => (int)((ownerId >> 32) & 0x3FFF_FFFF);
 }

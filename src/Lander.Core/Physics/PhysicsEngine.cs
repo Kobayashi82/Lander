@@ -223,8 +223,16 @@ public sealed class PhysicsEngine(PhysicsConfig config)
 
         support.Platform = segment;
 
-        // Vertical: si la plataforma cae más rápido que la gravedad, o frena en seco al subir, se separa.
-        if (detachCandidateVy < platformVelocity.Y - config.DetachTolerance * scale)
+        // Vertical: si la plataforma cae más rápido que la gravedad, o frena en seco al subir, se separa. El
+        // contenido de una ventana no empuja como una ventana arrastrada: al subir con el scroll y pararse, el
+        // lander sigue apoyado; si baja más deprisa que la gravedad, sí se separa.
+        var separates = detachCandidateVy < platformVelocity.Y - config.DetachTolerance * scale;
+        if (separates && segment.Kind == PlatformKind.Content && platformVelocity.Y <= 0)
+        {
+            separates = false;
+        }
+
+        if (separates)
         {
             var launch = Math.Clamp(detachCandidateVy * LaunchDamping, -config.MaxLaunchSpeed * scale, config.MaxLaunchSpeed * scale);
             body.Position = new Vec2(x, segment.Y - body.HalfHeight - 1);

@@ -27,7 +27,9 @@ public sealed class DemoPilot(IRandom? random = null)
 
         if (body.IsLanded)
         {
-            if (_targetOwner == 0 || body.Support?.OwnerId == _targetOwner)
+            // Posado en otro sitio (una plataforma en medio del camino): vale igual, se elige otro destino. Si
+            // no, despegaría, volvería a caer en la misma y así sin parar.
+            if (_targetOwner == 0 || body.Support?.OwnerId == _targetOwner || !racing)
             {
                 if (_restUntil == 0)
                 {
@@ -172,15 +174,26 @@ public sealed class DemoPilot(IRandom? random = null)
             return;
         }
 
-        // Un punto lejos de donde está, para que el salto merezca la pena.
-        var platform = _random.Pick(options);
-        var x = _random.Range(platform.Left + margin, platform.Right - margin);
-        if (Math.Abs(x - body.Position.X) < body.Height * 4)
+        // Un punto lejos de donde está, para que el salto merezca la pena, y al que se pueda bajar sin topar
+        // con otra plataforma (los bordes del contenido de una página suelen estar uno encima de otro).
+        for (var attempt = 0; attempt < 8; attempt++)
         {
-            x = body.Position.X < platform.CenterX ? platform.Right - margin : platform.Left + margin;
-        }
+            var platform = _random.Pick(options);
+            var x = _random.Range(platform.Left + margin, platform.Right - margin);
+            if (Math.Abs(x - body.Position.X) < body.Height * 4)
+            {
+                x = body.Position.X < platform.CenterX ? platform.Right - margin : platform.Left + margin;
+            }
 
-        _targetOwner = platform.OwnerId;
-        _targetLocalX = x - platform.OwnerOrigin.X;
+            var from = Math.Min(platform.Y - body.Height * 3, body.FeetY - 1);
+            if (attempt < 7 && !world.HasClearDescent(x, from, platform.Y, body.HalfWidth * 1.5, platform.OwnerId))
+            {
+                continue;
+            }
+
+            _targetOwner = platform.OwnerId;
+            _targetLocalX = x - platform.OwnerOrigin.X;
+            return;
+        }
     }
 }

@@ -34,6 +34,10 @@ el control: se convierte en un minijuego de *Lunar Lander* sobre tu propio escri
 - Varios monitores con distinto tamaño, posición y escalado: puede cruzar de uno a otro.
 - Hacer *scroll* rápido cerca de él levanta una ráfaga de viento. Con el modo oscuro de Windows enciende
   sus luces de navegación.
+- **Experimental**: también puede posarse dentro de las ventanas, en bordes horizontales claros del
+  contenido (separadores, cabeceras, tablas, el marco de una foto). Si haces *scroll*, se mueve con la
+  página; si el borde sale de la vista, se cae y se recompone en el aire. Está desactivado por defecto
+  (ver [Datos y privacidad](#datos-y-privacidad)).
 
 **Modo automático con personalidad**
 - Siete estados: reposar, elegir destino, volar, aterrizar, dormir, esquivar y volver a la base. Antes de
@@ -58,7 +62,8 @@ el control: se convierte en un minijuego de *Lunar Lander* sobre tu propio escri
 - Un único esquema de control como una nave de verdad: motor principal, propulsores de giro (← →) y de
   traslación (A D), y patas que se sacan y recogen (G). Todos los propulsores se ven encenderse.
 - Aterrizajes perfectos, duros o accidentes; puntos según la dificultad de la plataforma, rachas,
-  niveles de piloto, mejoras y aspectos desbloqueables.
+  niveles de piloto, mejoras y aspectos desbloqueables. Los bordes del contenido de las ventanas, si los
+  activas, puntúan como una ventana estrecha.
 - Misiones cortas: posarse sobre una aplicación concreta, recoger cristales, ida y vuelta sin repostar o
   llevar un paquete a otro monitor.
 
@@ -153,6 +158,7 @@ GitHub Actions compila, prueba y publica una versión con ambos ejecutables.
 | `--demo-manual` | Como `--demo`, pero pilotando en modo manual con un piloto simulado (sin capturar el teclado). |
 | `--demo-race` | Como `--demo-manual`, pero corriendo una carrera tras otra (necesita al menos dos ventanas a la vista). |
 | `--software` | Dibuja por CPU en lugar de por GPU (para comparar o si un controlador da problemas). |
+| `--show-in-captures` | Con «Posarse en el contenido» activado, el lander sigue saliendo en las capturas y grabaciones de pantalla (al analizar la pantalla se ignora la zona donde está). |
 | `--stats` | Registra cada diez segundos ciclos, fotogramas y tiempos de dibujo. |
 | `--preview archivo.png` | Dibuja todos los aspectos, expresiones, bocadillos y el HUD en una imagen. |
 | `--preview-hero archivo.png` | Genera la imagen de portada de este README. |
@@ -181,14 +187,33 @@ La arquitectura se explica en [docs/arquitectura.md](docs/arquitectura.md) y el 
 ## Datos y privacidad
 
 Lander no se conecta a internet. Guarda los ajustes y el progreso en `%APPDATA%\Lander` y un registro
-de los últimos siete días en `%LOCALAPPDATA%\Lander\logs`. Para leer el escritorio solo consulta la
-posición de las ventanas y el nombre de su aplicación; nunca su contenido.
+de los últimos siete días en `%LOCALAPPDATA%\Lander\logs`. Para leer el escritorio consulta la posición
+de las ventanas y el nombre de su aplicación.
+
+Solo si activas **Posarse en el contenido (experimental)** (en **Ajustes → Comportamiento** o en el menú
+de la bandeja; viene desactivado) mira además lo que hay dentro de las ventanas:
+
+- Toma imágenes de la pantalla con la duplicación del escritorio de Windows, solo del monitor donde está
+  el lander y solo cuando hace falta: unos segundos antes de elegir destino, mientras está posado o vuela
+  hacia el contenido de una ventana y mientras lo pilotas tú. Como mucho dos veces por segundo por ventana
+  (más a menudo solo para seguir el *scroll* de la ventana en la que está posado) y nunca si esa parte de
+  la pantalla no ha cambiado. En reposo no mira nada.
+- Las imágenes se pasan a escala de grises y se analizan en memoria para encontrar bordes; después se
+  descartan. **Nunca se guardan en disco ni se envían a ningún sitio**, y no se reconoce texto ni nada de
+  lo que hay en ellas: solo dónde hay líneas horizontales.
+- Nunca mira las ventanas de gestores de contraseñas (KeePass, Bitwarden, 1Password, LastPass…), las
+  pantallas de credenciales de Windows, ni ventanas cuyo título indique banca, pagos, contraseñas, un
+  inicio de sesión o navegación privada. Puedes añadir más aplicaciones en **Aplicaciones excluidas**.
+- El contenido protegido (vídeo con DRM) sale negro en la captura y simplemente no da bordes.
+- Para no verse a sí mismo, mientras la opción está activada las ventanas del lander se excluyen de las
+  capturas de pantalla, así que **el lander no sale en capturas ni grabaciones** (salvo con
+  `--show-in-captures`).
 
 ## Estado
 
 Implementadas las fases 1 a 6 del diseño (prototipo, terreno real, modo manual, modo automático,
-pulido y extras), el modo carrera, los logros y la publicación automática de ejecutables. Ideas
-pendientes:
+pulido y extras), el modo carrera, los logros, la publicación automática de ejecutables y, como opción
+experimental, posarse en el contenido de las ventanas. Ideas pendientes:
 
 - Varios landers a la vez.
 - Instalador (MSIX) y publicación en Microsoft Store o itch.io.

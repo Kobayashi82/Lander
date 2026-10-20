@@ -134,9 +134,10 @@ public sealed class LanderGame
             }
 
             // Posado sobre contenido hay que seguirlo incluso en pausa: si la página se mueve, se cae.
+            var manual = Mode == ControlMode.Manual;
             if (Body.IsLanded && Body.Support is { Platform.Kind: PlatformKind.Content } support)
             {
-                return new ContentInterest(ContentNeed.Landed, Platform.ContentWindow(support.OwnerId));
+                return new ContentInterest(ContentNeed.Landed, Platform.ContentWindow(support.OwnerId), support.OwnerId, manual && !IsPaused);
             }
 
             if (IsPaused)
@@ -144,14 +145,14 @@ public sealed class LanderGame
                 return default;
             }
 
-            if (Mode == ControlMode.Manual)
+            if (manual)
             {
-                return new ContentInterest(ContentNeed.Manual);
+                return new ContentInterest(ContentNeed.Manual, Piloting: true);
             }
 
             if (Autopilot.IsFlightActive && Autopilot.Destination is { Kind: PlatformKind.Content } destination)
             {
-                return new ContentInterest(ContentNeed.Destination, Platform.ContentWindow(destination.OwnerId));
+                return new ContentInterest(ContentNeed.Destination, Platform.ContentWindow(destination.OwnerId), destination.OwnerId);
             }
 
             return Autopilot.TimeUntilExploring is { } wait && wait <= ContentLookahead
