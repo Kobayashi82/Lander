@@ -109,7 +109,8 @@ public partial class App : Application
         UpdateTrayIcon();
 
         _engine = new EngineHost(_settings.Current.Clone(), _settings.Progress.Clone(), Dispatcher) {
-            DemoMode = e.Args.Contains("--demo") || e.Args.Contains("--demo-manual") || e.Args.Contains("--demo-race"),
+            DemoMode = e.Args.Contains("--demo") || e.Args.Contains("--demo-flights") || e.Args.Contains("--demo-manual") || e.Args.Contains("--demo-race"),
+            DemoFlights = e.Args.Contains("--demo-flights"),
             DemoPilot = e.Args.Contains("--demo-manual") || e.Args.Contains("--demo-race") ? new DemoPilot() : null,
             DemoRace = e.Args.Contains("--demo-race"),
             SoftwareRendering = e.Args.Contains("--software"),

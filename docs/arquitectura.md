@@ -70,18 +70,42 @@ trampas.
   agarre de las patas (sigue a la ventana o resbala), el balanceo (terremoto y vuelco) y la separación
   (la ventana cae más deprisa que la gravedad o frena en seco al subir). Los saltos de más de 250 px
   (maximizar, restaurar) se tratan como teletransportes: el lander se queda donde estaba y cae.
-- **Autopilot** (`Autopilot.cs`, `Autopilot.Flight.cs`, `Autopilot.Behaviors.cs`). Máquina de estados con
-  los siete estados del diseño. El vuelo usa un controlador en cascada: posición → velocidad deseada
-  (perfiles de frenado que cuentan con lo que tarda en girar) → aceleración → inclinación y motor,
-  exactamente lo que haría un piloto. Cada vuelo elige un estilo según distancia, desnivel, energía y
-  combustible: crucero, rasante, perezoso (bajada en hoja), arco (curva de Bézier seguida con una
-  «zanahoria»), panorámico (puntos en el aire) o frenada en el último instante: sube sobre el destino,
-  apaga el motor, cae y enciende cuando la deceleración necesaria llega al 78 % de la disponible, con
-  el empuje justo para tocar a 32 px/s. Puede intercalar una voltereta si hay sitio.
+- **Autopilot** (`Autopilot.cs` y sus partes `.Flight`, `.Maneuvers`, `.Ballistic`, `.Landing` y
+  `.Behaviors`). Máquina de estados con los siete estados del diseño. El vuelo usa un controlador en
+  cascada: posición → velocidad deseada (perfiles de frenado que cuentan con lo que tarda en girar) →
+  aceleración → inclinación y motor, exactamente lo que haría un piloto. Cada vuelo elige un estilo según
+  distancia, desnivel, energía, combustible, lo que haya por el camino y el ajuste de acrobacias:
+  - crucero, rasante, perezoso (bajada en hoja) y arco (curva de Bézier seguida con una «zanahoria»);
+  - **siguiendo el relieve**: la altura objetivo sale de la plataforma más alta que tiene delante (mira
+    más lejos cuanto más deprisa va) y nunca pasa del techo de lo que va a recorrer;
+  - **ondulante**: una onda sobre la altura de crucero, con la pendiente anticipada con la velocidad lateral
+    y aplanada cerca del suelo, del techo y del destino;
+  - **de precisión**: `FlightGuidance.TrackVelocityLevel` sostiene con el motor principal y se desplaza
+    con los propulsores de traslación, sin inclinarse (también en la aproximación);
+  - **salto balístico**: `FlightPredictor.LaunchVelocity` calcula, disparando unas cuantas parábolas con
+    la resistencia del aire, la velocidad que lleva hasta una cima bajo el techo y pasa por un punto sobre
+    el destino. Empuja hasta tenerla, apaga el motor y, cada 50 ms, simula «¿y si frenara ya?» con las
+    mismas ecuaciones que la física: enciende en el último instante en que la frenada aún termina sobre el
+    destino. Si la parábola real se sale de los monitores, cambia a crucero o frena antes;
+  - **picado**: crucero hasta que el destino queda a unos 40° por debajo y el tramo recto está despejado;
+    entonces baja en diagonal y se encabrita (hasta 0,95 rad) cuando la misma simulación dice que es el
+    momento;
+  - **frenada final**: sube sobre el destino, apaga el motor, cae y enciende cuando la deceleración
+    necesaria llega al 78 % de la disponible, con el empuje justo para tocar a 32 px/s;
+  - **a saltitos** cuando el destino está en la misma plataforma: varios saltos de tres o cuatro alturas,
+    posándose (y agachándose) entre uno y otro.
+
+  Puede intercalar una voltereta si hay sitio (o darla en plena parábola), hacer un reconocimiento
+  mirando a un lado y otro antes de posarse en un sitio nuevo, salir disparado con el impulso al esquivar
+  el cursor y saludarlo al pasar volando a su lado. Con el ajuste de acrobacias a «Ninguna» no hay
+  volteretas, caídas libres, saltos balísticos ni vuelos ondulantes.
 - **FlightEnvelope**: nunca contra el techo ni las paredes. Recorta la velocidad deseada para poder
-  frenar siempre (hacia arriba basta con apagar el motor) y, como última comprobación, apaga el motor si
-  el punto más alto que alcanzaría por inercia quedara pegado al borde superior. También vigila el suelo
-  de otros monitores al bajar.
+  frenar siempre (hacia arriba basta con apagar el motor; de lado cuenta con lo que tarda en inclinarse
+  hacia el otro lado, y los propulsores de traslación ayudan) y, como última comprobación, apaga el motor
+  si el punto más alto que alcanzaría por inercia quedara pegado al borde superior; ese borde es el del
+  tramo que va a barrer de lado, así que junto a un monitor más bajo cuenta su techo antes de llegar.
+  `PathIsClear` comprueba que un recorrido (arco, parábola, picado) quede con todo el cuerpo dentro de
+  los monitores, bajo el techo y sin rozar un suelo más alto que el destino.
 - **FuelPlanner**: estima el combustible de un vuelo (prudente en la mayoría de casos). No sale a un
   sitio desde el que no pueda volver a la base, vuelve a repostar a tiempo y, en vuelo, se desvía a la
   base o aterriza donde pueda (con frenada final, que es lo más económico) antes de quedarse seco. Sin
@@ -348,10 +372,17 @@ escaneos y eventos por segundo.
 - Modo carrera: reglas de balizas, penalizaciones, récords y medallas, y una carrera completa con el
   piloto simulado, que debe terminar con plata (es prudente) para comprobar que el tiempo de referencia
   es exigente pero alcanzable.
-- Durante el desarrollo se usó además una prueba de estrés (200 escritorios aleatorios de uno o dos
-  monitores con distinto DPI y tamaño de lander, quince minutos cada uno) para afinar el piloto automático:
-  más de 4000 aterrizajes sin un accidente, sin tocar el techo ni quedarse sin combustible (con los
-  despistes desactivados).
+- Técnicas de vuelo una a una (forzando el estilo): todas aterrizan perfecto; el salto balístico vuela con
+  el motor apagado y frena al final; el vuelo de precisión no se inclina; los saltitos se posan entre
+  salto y salto; sin acrobacias no hay volteretas ni caídas libres; entre dos monitores de distinta altura
+  no roza paredes. También que `FlightPredictor` sigue exactamente la física y que la parábola calculada
+  pasa por donde debe.
+- Durante el desarrollo se usó además una prueba de estrés: 400 escritorios aleatorios de uno o dos
+  monitores (de 1366×768 a 4K, desplazados en vertical hasta 400 px, con ventanas que se salen de la
+  pantalla), distinto DPI y tamaño de lander, quince minutos cada uno. Con los despistes desactivados:
+  unos 9600 aterrizajes sin un accidente, sin tocar el techo ni quedarse sin combustible, y una docena de
+  roces suaves con una pared (antes de esta revisión: 3 accidentes, 3 depósitos vacíos y más de 200 roces
+  en 4300 aterrizajes). Cada técnica nueva se probó además forzada en 300 escritorios.
 - `--preview` y `--preview-settings` permiten revisar todo el arte y la interfaz sin volar.
 - Contenido de las ventanas: detector sobre imágenes sintéticas que reproducen capturas reales (títulos
   subrayados, tablas, fotos, texto, temas oscuros, bordes suaves, huecos), seguimiento (confirmación,

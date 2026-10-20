@@ -71,8 +71,8 @@ public sealed partial class Autopilot
     /// <summary>Frenando a fondo: frenada final, frenada de un salto balístico o encabritado tras un picado.</summary>
     public bool IsBurning => _phase is FlightPhase.Burn or FlightPhase.Brake or FlightPhase.Flare;
 
-    /// <summary>Para los tests: obliga a volar con este estilo siempre que sea posible.</summary>
-    internal FlightStyle? ForcedStyle { get; set; }
+    /// <summary>Estilo con el que vuela siempre que sea posible (demostraciones y tests); null, el que toque.</summary>
+    public FlightStyle? ForcedStyle { get; set; }
 
     private void StartFlight(AutopilotContext ctx, Destination? destination, FlightPurpose purpose, AutopilotState state)
     {
@@ -245,7 +245,7 @@ public sealed partial class Autopilot
         weights[(int)FlightStyle.Swoop] = drop > height * 3 && dx > height * 5 && energy > 0.4 && healthy && !lowFuel
             ? 1.1 * (0.4 + 0.6 * stunts) : 0;
         weights[(int)FlightStyle.Dolphin] = dx > height * 10 && energy > 0.5 && !lowFuel && HasRoomToUndulate(ctx, purpose, target) ? 0.8 * stunts : 0;
-        weights[(int)FlightStyle.Ballistic] = stunts > 0 && dx > height * 7 && healthy && energy > 0.35 && TryPlanBallistic(ctx, target)
+        weights[(int)FlightStyle.Ballistic] = stunts > 0 && dx > height * 7 && healthy && energy > 0.25 && TryPlanBallistic(ctx, target)
             ? 1.6 * stunts : 0;
 
         return Pick(weights);

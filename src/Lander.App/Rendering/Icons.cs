@@ -18,6 +18,12 @@ internal static class Icons
     private static readonly Geometry QuestionHook = Path("M -3.4,-2.6 C -3.4,-7 3.6,-7 3.6,-2.8 C 3.6,0.2 0,0.4 0,3");
     private static readonly Geometry ZShape = Gfx.Polygon(-3, -3, 3, -3, 3, -1.8, -1, 1.8, 3, 1.8, 3, 3, -3, 3, -3, 1.8, 1, -1.8, -3, -1.8);
     private static readonly Geometry WrenchShape = CreateWrench();
+    private static readonly Geometry BellLeft = Path("M -6.6,-2.6 C -7.4,-5.4 -5.4,-7.4 -2.6,-6.6 Z");
+    private static readonly Geometry BellRight = Path("M 6.6,-2.6 C 7.4,-5.4 5.4,-7.4 2.6,-6.6 Z");
+    private static readonly Geometry Hand = Path(
+        "M -3.4,6.5 L -3.6,1.2 C -4.6,0.3 -5.9,-0.9 -5.7,-1.9 C -5.5,-2.8 -4.4,-2.6 -3.7,-1.8 L -3.1,-1.1 " +
+        "L -3.1,-5.2 C -3.1,-6.3 -1.6,-6.3 -1.6,-5.2 L -1.6,-1.6 L -1.6,-6.6 C -1.6,-7.7 -0.1,-7.7 -0.1,-6.6 L -0.1,-1.6 " +
+        "L 0.2,-6.1 C 0.2,-7.2 1.7,-7.2 1.7,-6.1 L 1.7,-1.4 L 2,-4.6 C 2,-5.6 3.5,-5.6 3.5,-4.6 L 3.5,2.6 C 3.5,4.6 2.6,5.6 2.2,6.5 Z");
 
     private static readonly Color Red = Gfx.Rgb(0xE5484D);
     private static readonly Color Gold = Gfx.Rgb(0xF5B301);
@@ -129,7 +135,69 @@ internal static class Icons
             case BubbleIcon.MedalBronze:
                 DrawMedal(dc, Gfx.Rgb(0xF2B37A), Gfx.Rgb(0xC0703A), Gfx.Rgb(0x83461E));
                 break;
+
+            case BubbleIcon.Clock:
+                DrawAlarmClock(dc, Accent(dark), dark, time);
+                break;
+
+            case BubbleIcon.Hello:
+                DrawWavingHand(dc, time);
+                break;
         }
+    }
+
+    /// <summary>Despertador con campanas que tiembla como si sonara.</summary>
+    private static void DrawAlarmClock(DrawingContext dc, Color accent, bool dark, double time)
+    {
+        var ring = Math.Sin(time * 38) * 7 * (0.6 + 0.4 * Math.Sin(time * 3));
+        dc.PushTransform(new RotateTransform(ring, 0, 1));
+
+        // Patas y campanas
+        var metal = Gfx.Pen(Gfx.Lerp(accent, Colors.Black, 0.25), 1.3);
+        dc.DrawLine(metal, new Point(-3.6, 5.2), new Point(-5, 7));
+        dc.DrawLine(metal, new Point(3.6, 5.2), new Point(5, 7));
+        dc.DrawGeometry(Gfx.Brush(accent), null, BellLeft);
+        dc.DrawGeometry(Gfx.Brush(accent), null, BellRight);
+        dc.DrawRoundedRectangle(Gfx.Brush(Gfx.Lerp(accent, Colors.Black, 0.25)), null, new Rect(-0.8, -7.4, 1.6, 1.6), 0.5, 0.5);
+
+        // Esfera
+        var face = dark ? Gfx.Rgb(0x2C2C2C) : Colors.White;
+        var center = new Point(0, 1);
+        dc.DrawEllipse(Gfx.Brush(face), Gfx.Pen(accent, 1.5), center, 5.6, 5.6);
+        var tick = Gfx.Pen(Gfx.Lerp(accent, face, 0.35), 0.7);
+        for (var i = 0; i < 4; i++)
+        {
+            var angle = i * Math.PI / 2;
+            var direction = new Vector(Math.Sin(angle), -Math.Cos(angle));
+            dc.DrawLine(tick, center + direction * 3.9, center + direction * 4.7);
+        }
+
+        // Las doce en punto: las dos agujas arriba, la de los minutos más larga.
+        var ink = dark ? Gfx.Rgb(0xE6E6E6) : Gfx.Rgb(0x2B2F36);
+        dc.DrawLine(Gfx.Pen(ink, 1.3), center, new Point(0, center.Y - 2.6));
+        dc.DrawLine(Gfx.Pen(ink, 0.9), center, new Point(0, center.Y - 4));
+        dc.DrawEllipse(Gfx.Brush(Red), null, center, 0.9, 0.9);
+        dc.Pop();
+    }
+
+    /// <summary>Mano que saluda, balanceándose desde la muñeca.</summary>
+    private static void DrawWavingHand(DrawingContext dc, double time)
+    {
+        var wave = Math.Sin(time * 9) * 16;
+        dc.PushTransform(new RotateTransform(wave - 10, 0, 6.5));
+        var skin = Gfx.Vertical((0, Gfx.Rgb(0xFFD866)), (1, Gfx.Rgb(0xF5B301)));
+        var outline = Gfx.Pen(0xB97A00, 0.6);
+        dc.DrawGeometry(skin, outline, Hand);
+        dc.DrawLine(Gfx.Pen(0xB97A00, 0.45, 160), new Point(-1.2, -1.2), new Point(-1.2, 0.6));
+        dc.DrawLine(Gfx.Pen(0xB97A00, 0.45, 160), new Point(0.7, -1.2), new Point(0.7, 0.6));
+        dc.DrawLine(Gfx.Pen(0xB97A00, 0.45, 160), new Point(2.5, -0.8), new Point(2.5, 0.8));
+        dc.Pop();
+
+        // Rayitas de movimiento a los lados.
+        var swing = Math.Abs(Math.Sin(time * 9));
+        var lines = Gfx.Pen(Gfx.Rgb(0xF5B301).WithAlpha(0.35 + 0.5 * swing), 0.8);
+        dc.DrawLine(lines, new Point(-7.2, -4.5), new Point(-6.2, -2.8));
+        dc.DrawLine(lines, new Point(7.2, -4.5), new Point(6.2, -2.8));
     }
 
     /// <summary>Bandera a cuadros que ondea un poco.</summary>

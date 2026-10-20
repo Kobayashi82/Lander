@@ -220,6 +220,14 @@
               <ComboBoxItem Content="Muchos" />
             </ComboBox>
           </ui:SettingCard>
+          <ui:SettingCard Glyph="&#xE709;" Header="Acrobacias" Description="Volteretas, caídas libres con frenada en el último instante, saltos balísticos, picados y vuelos ondulantes. Sin acrobacias vuela siempre con calma.">
+            <ComboBox SelectedIndex="{Binding Acrobatics}" MinWidth="160">
+              <ComboBoxItem Content="Ninguna" />
+              <ComboBoxItem Content="Pocas" />
+              <ComboBoxItem Content="Normales" />
+              <ComboBoxItem Content="Muchas" />
+            </ComboBox>
+          </ui:SettingCard>
           <ui:SettingCard Glyph="&#xE823;" Header="Visitar el reloj a las horas en punto" Description="Vuela hasta el reloj de la barra de tareas y lo celebra (solo si estás delante del PC).">
             <CheckBox Style="{StaticResource ToggleSwitchStyle}" IsChecked="{Binding VisitClock}" />
           </ui:SettingCard>

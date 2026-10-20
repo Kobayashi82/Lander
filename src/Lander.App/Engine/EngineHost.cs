@@ -10,6 +10,7 @@ using Lander.App.Rendering.Skins;
 using Lander.App.Services;
 using Lander.App.Vision;
 using Lander.Core;
+using Lander.Core.Autopilot;
 using Lander.Core.Game;
 using Lander.Core.Geometry;
 using Lander.Core.Missions;
@@ -38,6 +39,9 @@ internal sealed unsafe partial class EngineHost : IDisposable
     private const int MaxStepsPerTick = 20;
     private const double WindowSizeFactor = 5.8;
 
+    /// <summary>Errores seguidos (en menos de diez segundos) que se toleran antes de detener el motor.</summary>
+    private const int MaxTickErrors = 5;
+
     private readonly Dispatcher _ui;
     private readonly ConcurrentQueue<Action> _commands = new();
     private readonly AutoResetEvent _wake = new(false);
@@ -60,6 +64,9 @@ internal sealed unsafe partial class EngineHost : IDisposable
     private ContentVision _content = null!;
     private List<WindowInfo> _lastWindows = [];
     private ContentNeed _lastContentNeed;
+    private bool _contentFailed;
+    private int _tickErrors;
+    private double _lastTickError = double.NegativeInfinity;
 
     private LanderGame _game = null!;
     private LayeredWindow _window = null!;
@@ -157,6 +164,12 @@ internal sealed unsafe partial class EngineHost : IDisposable
 
     /// <summary>El piloto simulado corre una carrera tras otra (<c>--demo-race</c>).</summary>
     public bool DemoRace { get; init; }
+
+    /// <summary>
+    /// Muestrario de técnicas de vuelo (<c>--demo-flights</c>): como <c>--demo</c>, pero cada vuelo usa la siguiente
+    /// técnica de la lista siempre que sea posible, con las acrobacias al máximo.
+    /// </summary>
+    public bool DemoFlights { get; init; }
 
     /// <summary>Registra cada diez segundos ciclos, dibujos y tiempos (siempre en Debug; con <c>--stats</c> en Release).</summary>
     public bool Statistics { get; init; }
@@ -317,6 +330,7 @@ internal sealed unsafe partial class EngineHost : IDisposable
 
         _game = new LanderGame(BuildGameOptions(_settings), _progress, new GameRandom());
         _game.Initialize(_world);
+        NextDemoStyle();
         if (_settings.Paused)
         {
             _game.SetPaused(true);
@@ -358,7 +372,7 @@ internal sealed unsafe partial class EngineHost : IDisposable
             // tope); si no, cuando toque según el ritmo que pida el propio ciclo.
             if ((vsync && _smooth && now - _lastTick >= MinFrameInterval) || now >= nextTick)
             {
-                var interval = Tick(now);
+                var interval = SafeTick(now);
                 _smooth = UseVsync && interval <= FrameInterval + 1e-6;
                 SetVsync(_smooth);
                 if (_smooth)
@@ -430,6 +444,32 @@ internal sealed unsafe partial class EngineHost : IDisposable
     }
 
     /// <summary>Un ciclo del motor. Devuelve cuánto esperar hasta el siguiente.</summary>
+    /// <summary>
+    /// Un ciclo del motor a prueba de fallos: un error suelto se registra y se sigue en el ciclo siguiente
+    /// (la mascota no desaparece por un imprevisto). Solo si se repiten seguidos se detiene el motor.
+    /// </summary>
+    private double SafeTick(double now)
+    {
+        try
+        {
+            return Tick(now);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            _tickErrors = now - _lastTickError < 10 ? _tickErrors + 1 : 1;
+            _lastTickError = now;
+            if (_tickErrors >= MaxTickErrors)
+            {
+                throw;
+            }
+
+            Log.Error($"Error en un ciclo del motor ({_tickErrors}/{MaxTickErrors}); se continúa.", ex);
+            _lastTick = now;
+            _forceRender = true;
+            return 0.25;
+        }
+    }
+
     private double Tick(double now)
     {
         var elapsed = Math.Clamp(now - _lastTick, 0, 0.25);
@@ -518,7 +558,7 @@ internal sealed unsafe partial class EngineHost : IDisposable
         _sensors.UserIdleSeconds > 60 && _game.Mode == ControlMode.Auto && !_pressed && !_dragging;
 
     private bool IsActive(double now) =>
-        _game.Mode == ControlMode.Manual || _game.NeedsHighFrequency || _particles.Count > 0 || AntennaMoving
+        _game.Mode == ControlMode.Manual || _game.NeedsHighFrequency || _particles.Count > 0 || AntennaMoving || LightFading
         || _pressed || _dragging || now < _burstUntil || _markers.HasVisible;
 
     private bool IsAttentive() =>
@@ -631,7 +671,20 @@ internal sealed unsafe partial class EngineHost : IDisposable
         }
 
         _lastContentNeed = interest.Need;
-        var changed = _content.Update(now, interest, _lastWindows, _monitors, body.Position, landerRect, _sensors.ActiveWindow, _ownWindows);
+        bool changed;
+        try
+        {
+            changed = _content.Update(now, interest, _lastWindows, _monitors, body.Position, landerRect, _sensors.ActiveWindow, _ownWindows);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // Es una función experimental: si falla, se apaga (hasta reiniciar) y el lander sigue volando.
+            Log.Error("Contenido de las ventanas: error inesperado; se desactiva hasta reiniciar Lander.", ex);
+            _content.Enabled = false;
+            _contentFailed = true;
+            return true;
+        }
+
         if (changed && Statistics)
         {
             var listed = _content.Surfaces.Select(s => _windowBounds.TryGetValue((nint)s.WindowHandle, out var w)
@@ -852,6 +905,17 @@ internal sealed unsafe partial class EngineHost : IDisposable
         switch (gameEvent.Kind)
         {
             case GameEventKind.TookOff:
+                if (Statistics && _game.Mode == ControlMode.Auto)
+                {
+                    var autopilot = _game.Autopilot;
+                    Log.Stats($"Despega: {autopilot.Purpose}, estilo {autopilot.Style}{(autopilot.Mistake == PilotMistake.None ? string.Empty : $", despiste {autopilot.Mistake}")}.");
+                }
+
+                if (DemoFlights && _game.Mode == ControlMode.Auto)
+                {
+                    OnDemoTakeoff();
+                }
+
                 _particles.DustBurst(feet, 0.25, scale);
                 break;
 
@@ -891,6 +955,7 @@ internal sealed unsafe partial class EngineHost : IDisposable
                 break;
 
             case GameEventKind.Respawned:
+                _particles.Beam(position, scale);
                 _particles.Sparkles(position, 30 * scale, Gfx.Rgb(0x7DE3FF), 16, scale);
                 Play(Sound.Respawn);
                 break;
@@ -994,16 +1059,27 @@ internal sealed unsafe partial class EngineHost : IDisposable
 
             case GameEventKind.Flipped:
                 _particles.Sparkles(position, 28 * scale, Gfx.Rgb(0xFFE08A), 12, scale);
-                Play(Sound.Crystal, 0.6);
+                Play(Sound.Whoosh, 0.8);
+                Play(Sound.Crystal, 0.4);
                 break;
 
             case GameEventKind.EngineCut:
+            {
+                var body = _game.Body;
+                _particles.EnginePuff(BodyToWorld(body, _skin.Nozzle), -body.Up, body.Velocity, scale, _settings.Trail, Now);
                 Play(Sound.Puff, 0.5);
                 break;
+            }
 
             case GameEventKind.Ignition:
+            {
+                // Encendido a fondo de golpe: fogonazo en la tobera y la llama se estira un instante.
+                var body = _game.Body;
+                _particles.NozzleFlash(BodyToWorld(body, _skin.Nozzle), -body.Up, scale);
+                _game.Visual.BoostFlash = Math.Max(_game.Visual.BoostFlash, 0.3);
                 Play(Sound.Boost, 0.8);
                 break;
+            }
 
             case GameEventKind.Petted:
                 _particles.Hearts(position - new Vec2(0, 22 * scale), scale);
@@ -1569,7 +1645,7 @@ internal sealed unsafe partial class EngineHost : IDisposable
         }
 
         _content.UserExcludedApps = settings.ContentExcludedApps;
-        if (_content.Enabled != settings.LandOnContent)
+        if (_content.Enabled != settings.LandOnContent && !_contentFailed)
         {
             _content.Enabled = settings.LandOnContent;
             _terrainDirty = true;
@@ -1588,9 +1664,48 @@ internal sealed unsafe partial class EngineHost : IDisposable
         PublishStatus();
     }
 
+    /// <summary>Orden del muestrario de <c>--demo-flights</c>: primero lo más vistoso.</summary>
+    private static readonly FlightStyle[] DemoStyles =
+    [
+        FlightStyle.Ballistic, FlightStyle.Swoop, FlightStyle.Hopper, FlightStyle.Precision, FlightStyle.Contour,
+        FlightStyle.Dolphin, FlightStyle.HoverSlam, FlightStyle.Arc, FlightStyle.Brisk, FlightStyle.Lazy, FlightStyle.Cruise,
+    ];
+
+    private int _demoStyle;
+    private int _demoMisses;
+
+    /// <summary>
+    /// En el muestrario, pasa a la siguiente técnica cuando la actual ya se ha visto o tras dos vuelos en los
+    /// que no ha sido posible (los saltitos cortos y las recuperaciones no cuentan: no eligen técnica).
+    /// </summary>
+    private void OnDemoTakeoff()
+    {
+        var autopilot = _game.Autopilot;
+        if (autopilot.Purpose is FlightPurpose.Stroll or FlightPurpose.Hop or FlightPurpose.Dodge or FlightPurpose.Recover or FlightPurpose.EdgeDrop)
+        {
+            return;
+        }
+
+        if (autopilot.Style == autopilot.ForcedStyle || ++_demoMisses >= 2)
+        {
+            _demoMisses = 0;
+            NextDemoStyle();
+        }
+    }
+
+    /// <summary>En el muestrario, el próximo vuelo usará la siguiente técnica de la lista.</summary>
+    private void NextDemoStyle()
+    {
+        if (DemoFlights)
+        {
+            _game.Autopilot.ForcedStyle = DemoStyles[_demoStyle++ % DemoStyles.Length];
+        }
+    }
+
     private GameOptions BuildGameOptions(LanderSettings settings)
     {
         var options = settings.ToGameOptions();
+        options = DemoFlights ? options with { Acrobatics = 1 } : options;
         return DemoMode ? options with { Activity = Math.Max(options.Activity, 1) * 6 } : options;
     }
 

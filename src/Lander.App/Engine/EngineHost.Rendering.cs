@@ -224,7 +224,7 @@ internal sealed unsafe partial class EngineHost
         // Por GPU el lander se dibuja con precisión de subpíxel: también cuenta como cambio.
         var subpixel = UseGpu ? HashCode.Combine((int)(position.X * 8), (int)(position.Y * 8)) : 0;
         var animation = HashCode.Combine((int)(_scene.Pose.Compress * 20), (int)(_scene.Pose.Yawn * 20), (int)(_scene.Pose.AntennaSway * 100),
-            (int)(_scene.Offset.X * 10), (int)(_scene.Offset.Y * 10), (int)(_scene.Tilt * 300), (int)(_scene.ShadowStrength * 30), (int)(_scene.GroundGlow * 30));
+            (int)(_scene.Offset.X * 10), (int)(_scene.Offset.Y * 10), (int)(_scene.Tilt * 300), (int)(_scene.ShadowStrength * 30), (int)(_scene.GroundGlow * 30) * 37 + (int)(_scene.LandingLight * 30));
         var signature = HashCode.Combine(
             raceSignature,
             subpixel,
@@ -266,7 +266,7 @@ internal sealed unsafe partial class EngineHost
 
         var stretch = Envelope(visual.StretchTime, LanderVisual.StretchDuration);
         var yawn = Envelope(visual.YawnTime, LanderVisual.YawnDuration);
-        var compress = visual.Squash * 3.2 - stretch * 2.4 - yawn * 0.9;
+        var compress = visual.Squash * 3.2 - stretch * 2.4 - yawn * 0.9 + visual.CrouchLevel * 3;
 
         var hop = 9 * Envelope(visual.BounceTime, LanderVisual.BounceDuration);
         var tilt = 0.0;
@@ -296,6 +296,7 @@ internal sealed unsafe partial class EngineHost
         _scene.ShadowY = null;
         _scene.ShadowStrength = 0;
         _scene.GroundGlow = 0;
+        var lightTarget = 0.0;
         if (body.State != BodyState.Destroyed && _world.PlatformBelow(position.X, feet - 2) is { } below)
         {
             var gap = Math.Max(0, below.Y - feet);
@@ -306,8 +307,30 @@ internal sealed unsafe partial class EngineHost
                 _scene.ShadowStrength = 1 - gap / reach;
                 _scene.GroundGlow = visual.MainFlame * Math.Clamp(1 - gap / (body.Height * 1.6), 0, 1);
             }
+
+            // De noche enciende el faro al bajar hacia donde se va a posar (o al pilotarlo a mano).
+            var approaching = _game.Mode == ControlMode.Manual || _game.Autopilot.State == Core.Autopilot.AutopilotState.Landing;
+            if (_sensors.DarkMode && body.IsFlying && approaching && gap > body.Height * 0.15 && gap < body.Height * 2.3)
+            {
+                lightTarget = Math.Clamp((body.Height * 2.3 - gap) / (body.Height * 0.6), 0, 1);
+                _scene.LightSurfaceY = below.Y;
+            }
+        }
+
+        // El faro se enciende y se apaga con suavidad (y se apaga solo al posarse).
+        var dt = Math.Clamp(now - _lightClock, 0, 0.1);
+        _lightClock = now;
+        _scene.LandingLight = MathUtil.Damp(_scene.LandingLight, lightTarget, lightTarget > _scene.LandingLight ? 6 : 4, dt);
+        if (_scene.LandingLight < 0.01 && lightTarget <= 0)
+        {
+            _scene.LandingLight = 0;
         }
     }
+
+    private double _lightClock;
+
+    /// <summary>El faro aún se está encendiendo o apagando.</summary>
+    private bool LightFading => _scene.LandingLight > 0;
 
     /// <summary>Muelle de la antena: se inclina con las aceleraciones laterales y vuelve oscilando.</summary>
     private void UpdateAntenna(LanderBody body, double elapsed)

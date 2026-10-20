@@ -14,6 +14,7 @@ internal enum Sound
     Scrape,
     Respawn,
     Pop,
+    Whoosh,
 }
 
 /// <summary>
@@ -45,6 +46,7 @@ internal static class SoundBank
             [Sound.Scrape] = Scrape(random),
             [Sound.Respawn] = Sweep(300, 900, 0.35, 0.22),
             [Sound.Pop] = Sweep(1100, 700, 0.06, 0.18),
+            [Sound.Whoosh] = Whoosh(random),
         };
     }
 
@@ -214,6 +216,26 @@ internal static class SoundBank
         }
 
         return Normalize(samples, 0.22);
+    }
+
+    /// <summary>Aire que pasa deprisa: ruido filtrado cuyo tono sube y baja (volteretas, picados).</summary>
+    private static float[] Whoosh(Random random)
+    {
+        const double seconds = 0.5;
+        var samples = Buffer(seconds);
+        double low = 0, band = 0;
+        for (var i = 0; i < samples.Length; i++)
+        {
+            var t = i / (double)SampleRate;
+            var k = t / seconds;
+            var sweep = Math.Sin(Math.PI * k);
+            var cutoff = 0.02 + 0.16 * sweep;
+            low += cutoff * ((random.NextDouble() * 2 - 1) - low);
+            band += cutoff * 0.5 * (low - band);
+            samples[i] = (float)(sweep * sweep * (low - band));
+        }
+
+        return Normalize(samples, 0.2);
     }
 
     private static float[] Sweep(double from, double to, double seconds, double peak)

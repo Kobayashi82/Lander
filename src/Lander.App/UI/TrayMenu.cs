@@ -93,6 +93,14 @@ internal sealed class TrayMenu(SettingsService settings, Func<EngineStatus> stat
 
         menu.Items.Add(mistakes);
 
+        var acrobatics = new MenuItem { Header = "Acrobacias" };
+        foreach (var (label, level) in new[] { ("Ninguna", 0.0), ("Pocas", 0.25), ("Normales", 0.5), ("Muchas", 1.0) })
+        {
+            acrobatics.Items.Add(Check(label, Math.Abs(current.Acrobatics - level) < 0.01, () => settings.Update(s => s.Acrobatics = level)));
+        }
+
+        menu.Items.Add(acrobatics);
+
         var skins = new MenuItem { Header = "Aspecto" };
         foreach (var unlock in Unlocks.OfKind(UnlockKind.Skin))
         {

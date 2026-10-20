@@ -46,11 +46,29 @@ el control: se convierte en un minijuego de *Lunar Lander* sobre tu propio escri
   según lo tímido que lo configures).
 - Reacciona a Windows: da un salto con las notificaciones, vuelve a la base a dormir si no usas el PC,
   va a recargar con la batería baja y celebra cuando vacías la papelera (vuela hasta su icono).
-- Vuela de muchas formas: crucero, rasante, perezoso (baja balanceándose como una hoja), en arco,
-  vuelos panorámicos por todo el monitor y, a veces, sube, apaga el motor, cae en caída libre y frena
-  en el último instante (*suicide burn*). De vez en cuando, una voltereta.
+- Vuela de muchas formas y elige la que encaja con cada trayecto:
+  - **Crucero**, **rasante** y **perezoso** (baja balanceándose como una hoja).
+  - **En arco** y **ondulante**, subiendo y bajando como un delfín.
+  - **Siguiendo el relieve**: pasa a ras de las ventanas que tiene debajo, subiendo y bajando con ellas.
+  - **De precisión**: nivelado todo el vuelo, deslizándose con los propulsores de traslación como al
+    atracar una nave. Lo prefiere para sitios delicados.
+  - **Salto balístico**: un empujón inclinado, la parábola con el motor apagado (a veces con voltereta) y
+    una frenada final inclinado contra el movimiento, encendiendo en el último instante posible.
+  - **En picado**: baja en diagonal muy deprisa y se encabrita para frenar de golpe.
+  - **Caída libre con frenada final** (*suicide burn*): sube sobre el destino, apaga el motor, cae y
+    frena en el último instante.
+  - **A saltitos** por la barra de tareas o por una barra de título, posándose entre salto y salto.
+  - **Vuelos panorámicos** por todo el monitor y, de vez en cuando, una voltereta.
+- Antes de posarse en un sitio nuevo, a veces se queda un momento encima mirando a un lado y a otro. Si
+  pasa volando junto al cursor, te saluda balanceando la nave; si lo asustas, sale disparado con el impulso.
+- Cuántas acrobacias hace (volteretas, caídas libres, saltos balísticos, picados) se ajusta en
+  **Ajustes → Comportamiento → Acrobacias**; sin acrobacias vuela siempre con calma.
 - Calcula el combustible de cada vuelo: no sale si no le llega para volver a la base, se desvía o
-  aterriza antes de quedarse seco, y nunca choca con el borde superior de la pantalla.
+  aterriza antes de quedarse seco, y nunca choca con el borde superior de la pantalla. Con varios
+  monitores de distinto tamaño comprueba que el recorrido no pase por fuera de las pantallas.
+- Animaciones cuidadas: se agacha antes de despegar y se estira al saltar, suelta una bocanada de humo al
+  apagar el motor y un fogonazo al encenderlo a fondo, de noche enciende un faro al aterrizar y, al
+  reaparecer tras un accidente, llega en una columna de luz.
 - En reposo pasea por la barra de título, se asoma al borde y se tira, bosteza, se estira, echa siestas,
   te saluda al volver, se deja acariciar con el cursor, acompaña a la ventana que activas y visita el
   reloj de la barra de tareas a las horas en punto.
@@ -157,9 +175,10 @@ GitHub Actions compila, prueba y publica una versión con ambos ejecutables.
 | `--demo` | Modo demostración: simula a alguien delante del PC y vuela mucho más a menudo. No guarda el progreso. |
 | `--demo-manual` | Como `--demo`, pero pilotando en modo manual con un piloto simulado (sin capturar el teclado). |
 | `--demo-race` | Como `--demo-manual`, pero corriendo una carrera tras otra (necesita al menos dos ventanas a la vista). |
+| `--demo-flights` | Como `--demo`, pero cada vuelo usa la siguiente técnica (salto balístico, picado, saltitos, precisión, relieve, ondulante, caída libre...) y con las acrobacias al máximo. |
 | `--software` | Dibuja por CPU en lugar de por GPU (para comparar o si un controlador da problemas). |
 | `--show-in-captures` | Con «Posarse en el contenido» activado, el lander sigue saliendo en las capturas y grabaciones de pantalla (al analizar la pantalla se ignora la zona donde está). |
-| `--stats` | Registra cada diez segundos ciclos, fotogramas y tiempos de dibujo. |
+| `--stats` | Registra cada diez segundos ciclos, fotogramas y tiempos de dibujo, y el motivo y la técnica de cada vuelo. |
 | `--preview archivo.png` | Dibuja todos los aspectos, expresiones, bocadillos y el HUD en una imagen. |
 | `--preview-hero archivo.png` | Genera la imagen de portada de este README. |
 | `--preview-settings carpeta` | Guarda cada página de los ajustes como imagen, sin mostrarlos. |
@@ -217,6 +236,10 @@ experimental, posarse en el contenido de las ventanas. Ideas pendientes:
 
 - Varios landers a la vez.
 - Instalador (MSIX) y publicación en Microsoft Store o itch.io.
+
+## Cambios
+
+Las novedades de cada versión están en [CHANGELOG.md](CHANGELOG.md).
 
 ## Licencia
 

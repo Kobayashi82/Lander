@@ -17,6 +17,9 @@ internal enum ParticleKind : byte
     Heart,
     Puff,
     Ring,
+
+    /// <summary>Columna de luz del teletransporte (al reaparecer).</summary>
+    Beam,
 }
 
 internal struct Particle
@@ -322,6 +325,54 @@ internal sealed class ParticleSystem
         });
     }
 
+    /// <summary>Bocanada de humo en la tobera al apagar el motor de golpe (antes de una caída libre).</summary>
+    public void EnginePuff(Vec2 nozzle, Vec2 direction, Vec2 bodyVelocity, double scale, string trail, double time)
+    {
+        for (var i = 0; i < 8; i++)
+        {
+            var spread = new Vec2(-direction.Y, direction.X) * Range(-34, 34) * scale;
+            Emit(new Particle
+            {
+                Position = nozzle + direction * Range(1, 5) * scale,
+                Velocity = bodyVelocity * 0.7 + direction * Range(20, 55) * scale + spread,
+                Life = Range(0.55, 0.95),
+                Size = Range(2.2, 3.4) * scale,
+                Growth = Range(9, 13) * scale,
+                Drag = 3,
+                Gravity = -10 * scale,
+                Color = Trails.SmokeColor(trail, time, _random.NextDouble()),
+                Kind = ParticleKind.Smoke,
+            });
+        }
+    }
+
+    /// <summary>Fogonazo en la tobera al encender el motor a fondo de golpe.</summary>
+    public void NozzleFlash(Vec2 nozzle, Vec2 direction, double scale)
+    {
+        Emit(new Particle
+        {
+            Position = nozzle + direction * 7 * scale,
+            Life = 0.24,
+            Size = 8 * scale,
+            Growth = 46 * scale,
+            Color = Gfx.Rgb(0xFFD58A),
+            Kind = ParticleKind.Flash,
+        });
+    }
+
+    /// <summary>Columna de luz al reaparecer, como un teletransporte.</summary>
+    public void Beam(Vec2 at, double scale)
+    {
+        Emit(new Particle
+        {
+            Position = at,
+            Life = 1.1,
+            Size = 24 * scale,
+            Color = Gfx.Rgb(0x7DE3FF),
+            Kind = ParticleKind.Beam,
+        });
+    }
+
     /// <summary>Corazones que suben balanceándose (le han acariciado).</summary>
     public void Hearts(Vec2 at, double scale, int count = 5)
     {
@@ -378,6 +429,12 @@ internal sealed class ParticleSystem
             }
 
             var t = p.Age / p.Life;
+            if (p.Kind == ParticleKind.Beam)
+            {
+                DrawBeam(dc, p, t);
+                continue;
+            }
+
             var edge = Math.Clamp((1 - Vec2.Distance(p.Position, center) / radius) / 0.22, 0, 1);
             if (edge <= 0)
             {
@@ -440,6 +497,26 @@ internal sealed class ParticleSystem
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// La columna de luz: un halo alargado y tenue con un núcleo estrecho y brillante que se enciende de golpe
+    /// y se apaga estrechándose, más un destello en el suelo. Los halos usan el pincel radial compartido, así
+    /// que se difuminan por todos los lados sin crear pinceles nuevos.
+    /// </summary>
+    private static void DrawBeam(DrawingContext dc, in Particle p, double t)
+    {
+        var alpha = Math.Min(1, t * 8) * Math.Pow(1 - t, 1.6);
+        if (alpha < 0.01)
+        {
+            return;
+        }
+
+        var width = p.Size * (1 - 0.55 * t);
+        var middle = new Point(p.Position.X, p.Position.Y - p.Size * 1.8);
+        dc.DrawEllipse(LanderParts.Glow(p.Color, 0.55 * alpha), null, middle, width * 1.1, p.Size * 4.2);
+        dc.DrawEllipse(LanderParts.Glow(Gfx.Rgb(0xE6FBFF), 0.9 * alpha), null, middle, width * 0.32, p.Size * 3.8);
+        dc.DrawEllipse(LanderParts.Glow(p.Color, 0.7 * alpha), null, new Point(p.Position.X, p.Position.Y + p.Size * 0.95), width * 1.4, p.Size * 0.28);
     }
 
     private void Emit(in Particle particle)

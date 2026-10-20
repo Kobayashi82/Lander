@@ -39,11 +39,11 @@ internal static class PreviewSheet
         var width = Cell * Poses.Length;
         var bubbleRows = (icons.Length + Poses.Length - 1) / Poses.Length;
         var hudRow = skins.Count + bubbleRows;
-        var height = Cell * (hudRow + 2);
+        var height = Cell * (hudRow + 3);
         var visual = new DrawingVisual();
         using (var dc = visual.RenderOpen())
         {
-            for (var row = 0; row <= hudRow + 1; row++)
+            for (var row = 0; row <= hudRow + 2; row++)
             {
                 var dark = row % 2 == 1;
                 dc.DrawRectangle(Gfx.Brush(dark ? 0x202020U : 0xF3F3F3U), null, new Rect(0, row * Cell, width, Cell));
@@ -74,6 +74,7 @@ internal static class PreviewSheet
 
             DrawHudSamples(dc, hudRow);
             DrawRaceSamples(dc, hudRow + 1);
+            DrawManeuverSamples(dc, hudRow + 2);
         }
 
         var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
@@ -202,6 +203,67 @@ internal static class PreviewSheet
         MarkerLayer.DrawBeacon(dc, 72, 160, new MarkerSpec(MarkerKind.Beacon, default, scale * 0.8, BubbleIcon.Home, Alpha: 0.45), 0.6, dark);
         dc.Pop();
         Label(dc, "Balizas de carrera", Cell * 5.3 + 6, top + 4, dark);
+    }
+
+    /// <summary>
+    /// Maniobras del piloto automático: agacharse antes de despegar, la parábola del salto balístico, su
+    /// frenada final, el encabritado tras un picado, el vuelo nivelado de precisión, el faro de aterrizaje de
+    /// noche y la columna de luz al reaparecer.
+    /// </summary>
+    private static void DrawManeuverSamples(DrawingContext dc, int row)
+    {
+        var dark = row % 2 == 1;
+        var top = row * Cell;
+        const double scale = 1.5;
+        var skin = SkinCatalog.Classic;
+
+        (string Label, LanderPose Pose, double Angle, double Lift)[] poses =
+        [
+            ("Agachado", new LanderPose { Compress = 3, Expression = Expression.Focused, MainFlame = 0.25, Time = 0.1 }, 0, 0),
+            ("Parábola", new LanderPose { LegsDeploy = 0, Expression = Expression.Happy, Look = new Vec2(0.7, 0.5) }, 0.35, 18),
+            ("Frenada", new LanderPose { MainFlame = 1, BoostFlash = 0.3, Time = 0.25, Expression = Expression.Focused, Look = new Vec2(0.4, 0.8) }, -0.8, 18),
+            ("Encabritado", new LanderPose { MainFlame = 1, Time = 0.4, Expression = Expression.Scared, LegsDeploy = 0.7 }, 0.95, 14),
+            ("Precisión", new LanderPose { MainFlame = 0.45, LeftJet = 0.9, LowerLeftJet = 0.9, Time = 0.15, Expression = Expression.Focused, Look = new Vec2(0.8, 0.3) }, 0, 10),
+        ];
+
+        for (var i = 0; i < poses.Length; i++)
+        {
+            var (label, pose, angle, lift) = poses[i];
+            var center = new Vec2(Cell * i + Cell / 2.0, top + Cell * 0.55 - lift);
+            SceneRenderer.DrawLander(dc, skin, center, angle, scale, pose);
+            Label(dc, label, Cell * i + 6, top + 4, dark);
+        }
+
+        // Las dos últimas, de noche.
+        dc.DrawRectangle(Gfx.Brush(0x161B26), null, new Rect(Cell * 5, top, Cell * 2, Cell));
+
+        // Faro de aterrizaje: posado casi sobre una superficie, de noche.
+        var surface = top + Cell * 0.9;
+        var lit = new Vec2(Cell * 5.5, surface - 24 * scale - 38);
+        dc.DrawRectangle(Gfx.Brush(0x6B7280), null, new Rect(Cell * 5 + 8, surface, Cell - 16, 3));
+        var scene = new LanderScene
+        {
+            Position = lit,
+            Scale = scale,
+            Dark = true,
+            LandingLight = 1,
+            LightSurfaceY = surface,
+            ShadowY = surface,
+            ShadowStrength = 0.5,
+            Skin = skin,
+            Pose = new LanderPose { Night = true, MainFlame = 0.5, Time = 0.3, Look = new Vec2(0, 0.9), Expression = Expression.Focused },
+        };
+        SceneRenderer.Draw(dc, scene, new ParticleSystem(), new Rect(0, 0, Cell * 7, top + Cell));
+        Label(dc, "Faro (noche)", Cell * 5 + 6, top + 4, dark: true);
+
+        // Columna de luz al reaparecer.
+        var beam = new ParticleSystem();
+        var at = new Vec2(Cell * 6.5, top + Cell * 0.62);
+        beam.Beam(at, scale);
+        beam.Update(0.2);
+        beam.Draw(dc, new Rect(Cell * 6, top, Cell, Cell), front: false);
+        SceneRenderer.DrawLander(dc, skin, at, 0, scale, new LanderPose { Expression = Expression.Happy }, 0.6);
+        Label(dc, "Teletransporte", Cell * 6 + 6, top + 4, dark: true);
     }
 
     /// <summary>

@@ -72,6 +72,12 @@ internal sealed class LanderScene
 
     /// <summary>Resplandor del motor sobre la superficie de debajo (0–1).</summary>
     public double GroundGlow { get; set; }
+
+    /// <summary>Faro de aterrizaje (de noche, al acercarse a donde va a posarse), de 0 a 1.</summary>
+    public double LandingLight { get; set; }
+
+    /// <summary>Superficie que ilumina el faro.</summary>
+    public double LightSurfaceY { get; set; }
 }
 
 internal static class SceneRenderer
@@ -133,6 +139,7 @@ internal static class SceneRenderer
     /// </summary>
     private static void DrawGroundEffects(DrawingContext dc, LanderScene scene)
     {
+        DrawLandingLight(dc, scene);
         if (scene.ShadowY is not { } surface)
         {
             return;
@@ -155,6 +162,52 @@ internal static class SceneRenderer
             dc.DrawEllipse(Skins.LanderParts.Glow(Gfx.Rgb(0xFFA94D), 0.55 * glow), null,
                 new Point(x, surface), 30 * scale * (0.6 + 0.4 * glow), 5 * scale * (0.6 + 0.4 * glow));
         }
+    }
+
+    private static readonly Geometry LightCone = Gfx.Polygon(-0.22, 0, 0.22, 0, 1, 1, -1, 1);
+
+    private static readonly Brush LightConeFill = Gfx.Gradient(new Point(0, 0), new Point(0, 1),
+        (0, Gfx.Rgb(0xFFF4D6, 120)), (0.55, Gfx.Rgb(0xFFF1C9, 46)), (1, Gfx.Rgb(0xFFF1C9, 10)));
+
+    /// <summary>
+    /// De noche, al acercarse a donde se va a posar, un haz cálido desde la panza del lander hasta la
+    /// superficie y la mancha de luz que deja en ella. El haz sigue la inclinación de la nave.
+    /// </summary>
+    private static void DrawLandingLight(DrawingContext dc, LanderScene scene)
+    {
+        var light = Math.Clamp(scene.LandingLight, 0, 1);
+        if (light < 0.02)
+        {
+            return;
+        }
+
+        var scale = scene.Scale;
+        var down = new Vec2(-Math.Sin(scene.Angle), Math.Cos(scene.Angle));
+        if (down.Y < 0.4)
+        {
+            return;
+        }
+
+        var belly = scene.Position + down * (10 * scale);
+        var length = (scene.LightSurfaceY - belly.Y) / down.Y;
+        if (length < 4 * scale)
+        {
+            return;
+        }
+
+        var spread = 7 * scale + length * 0.42;
+        var cone = Matrix.Identity;
+        cone.Scale(spread, length);
+        cone.Rotate(scene.Angle * 180 / Math.PI);
+        cone.Translate(belly.X, belly.Y);
+        dc.PushOpacity(light);
+        dc.PushTransform(new MatrixTransform(cone));
+        dc.DrawGeometry(LightConeFill, null, LightCone);
+        dc.Pop();
+
+        var spot = belly + down * length;
+        dc.DrawEllipse(Skins.LanderParts.Glow(Gfx.Rgb(0xFFF1C9), 0.75), null, new Point(spot.X, scene.LightSurfaceY), spread * 1.15, 4.5 * scale);
+        dc.Pop();
     }
 
     /// <summary>Dibuja el lander con su posición, giro y escala.</summary>

@@ -269,6 +269,18 @@ public sealed class SettingsViewModel : ObservableObject
         set => _service.Update(s => s.PilotErrors = PilotErrorLevels[Math.Clamp(value, 0, PilotErrorLevels.Length - 1)]);
     }
 
+    private static readonly double[] AcrobaticsLevels = [0, 0.25, 0.5, 1];
+
+    public int Acrobatics
+    {
+        get
+        {
+            var value = S.Acrobatics;
+            return Array.IndexOf(AcrobaticsLevels, AcrobaticsLevels.MinBy(level => Math.Abs(level - value)));
+        }
+        set => _service.Update(s => s.Acrobatics = AcrobaticsLevels[Math.Clamp(value, 0, AcrobaticsLevels.Length - 1)]);
+    }
+
     public bool VisitClock
     {
         get => S.VisitClock;
