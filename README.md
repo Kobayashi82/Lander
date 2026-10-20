@@ -134,14 +134,9 @@ pausa.
 
 ## Instalación
 
-Descarga la última versión desde [Releases](https://github.com/Kobayashi82/Lander/releases):
-
-- `Lander-x.y.z-win-x64.zip`: ejecutable de 1,3 MB. Necesita el
-  [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0).
-- `Lander-x.y.z-win-x64-standalone.zip`: no necesita instalar nada (≈65 MB).
-
-Si no sabes cuál elegir, descarga el autónomo. En ambos casos es un único `Lander.exe`, sin instalador:
-descomprímelo donde quieras y ejecútalo. El lander aparecerá en la barra de tareas y su icono en el área
+Descarga `Lander.exe` de la última versión en
+[Releases](https://github.com/Kobayashi82/Lander/releases). Es un único ejecutable autónomo (≈65 MB), sin
+instalador y sin necesidad de instalar .NET: guárdalo donde quieras y ejecútalo. El lander aparecerá en la barra de tareas y su icono en el área
 de notificación. Para que arranque con Windows, actívalo en **Ajustes → General**.
 
 El ejecutable no está firmado, así que la primera vez Windows SmartScreen puede avisar de que es una
@@ -159,12 +154,12 @@ dotnet test --project tests/Lander.Core.Tests  # tests del núcleo
 dotnet run --project src/Lander.App            # ejecutar
 
 # Publicar
-dotnet publish src/Lander.App -p:PublishProfile=win-x64             # ejecutable pequeño
-dotnet publish src/Lander.App -p:PublishProfile=win-x64-standalone  # autónomo
+dotnet publish src/Lander.App -p:PublishProfile=win-x64-standalone  # autónomo (el de Releases)
+dotnet publish src/Lander.App -p:PublishProfile=win-x64             # pequeño, necesita el .NET 10 Desktop Runtime
 ```
 
-Los ejecutables quedan en `artifacts/publish/`. Al subir una etiqueta `v*` (por ejemplo `v0.1.0`),
-GitHub Actions compila, prueba y publica una versión con ambos ejecutables.
+Los ejecutables quedan en `artifacts/publish/`. Al subir una etiqueta `v*` (por ejemplo `v1.0.0`),
+GitHub Actions compila, prueba y publica una versión con el ejecutable autónomo.
 
 ### Opciones de línea de órdenes
 

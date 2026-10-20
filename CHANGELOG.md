@@ -2,6 +2,10 @@
 
 Todas las novedades de Lander, de la más reciente a la más antigua.
 
+## 1.0.0
+
+Primera versión publicada: el ejecutable autónomo `Lander.exe` en Releases.
+
 ## 0.4.0
 
 **Técnicas de vuelo nuevas en el modo automático**
