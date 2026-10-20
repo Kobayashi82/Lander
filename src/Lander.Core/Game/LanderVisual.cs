@@ -158,6 +158,15 @@ public sealed class LanderVisual
 
     public double BounceTime { get; private set; }
 
+    /// <summary>
+    /// Petición de agacharse en este paso (1 = del todo), como antes de saltar: el piloto la renueva en cada
+    /// paso mientras se prepara para despegar y se pone a 0 sola.
+    /// </summary>
+    public double Crouch { get; set; }
+
+    /// <summary>Cuánto está agachado ahora mismo (0–1), suavizado.</summary>
+    public double CrouchLevel { get; private set; }
+
     private double _squashVelocity;
 
     /// <summary>Hay animaciones en curso que requieren refrescar a menudo.</summary>
@@ -167,7 +176,7 @@ public sealed class LanderVisual
         || Opacity < 1 || Popups.Count > 0 || (Bubble is not null && BubbleAge < 0.4)
         || (Bubble is not null && BubbleAge > Bubble.Duration - 0.4)
         || Math.Abs(Squash) > 0.003 || Math.Abs(_squashVelocity) > 0.02
-        || WaveTime > 0 || YawnTime > 0 || StretchTime > 0 || WiggleTime > 0 || BounceTime > 0
+        || WaveTime > 0 || YawnTime > 0 || StretchTime > 0 || WiggleTime > 0 || BounceTime > 0 || CrouchLevel > 0.01 || Crouch > 0
         || _lookSettling;
 
     /// <summary>La mirada aún se está moviendo hacia su objetivo.</summary>
@@ -175,6 +184,9 @@ public sealed class LanderVisual
 
     /// <summary>Golpe de las patas contra la plataforma; 1 equivale al límite de un aterrizaje perfecto.</summary>
     public void Impact(double strength) => _squashVelocity += Math.Clamp(strength, 0.2, 2.5) * 7;
+
+    /// <summary>Impulso hacia arriba al despegar: el cuerpo se estira un instante sobre las patas.</summary>
+    public void PushOff(double strength) => _squashVelocity -= Math.Clamp(strength, 0, 2) * 5;
 
     public void StartWave() => WaveTime = WaveDuration;
 
@@ -202,6 +214,13 @@ public sealed class LanderVisual
         {
             Expression = expression;
         }
+    }
+
+    /// <summary>Termina la expresión temporal que hubiera y vuelve a la de fondo.</summary>
+    public void ClearFlash()
+    {
+        _expressionTimer = 0;
+        Expression = _baseExpression;
     }
 
     /// <summary>Expresión temporal durante <paramref name="seconds"/> segundos.</summary>
@@ -266,6 +285,13 @@ public sealed class LanderVisual
         StretchTime = Math.Max(0, StretchTime - dt);
         WiggleTime = Math.Max(0, WiggleTime - dt);
         BounceTime = Math.Max(0, BounceTime - dt);
+        CrouchLevel = MathUtil.Damp(CrouchLevel, Math.Clamp(Crouch, 0, 1), Crouch > CrouchLevel ? 9 : 22, dt);
+        if (CrouchLevel < 0.005 && Crouch <= 0)
+        {
+            CrouchLevel = 0;
+        }
+
+        Crouch = 0;
 
         var flying = body.IsFlying && body.Fuel > 0;
         var throttle = flying ? Math.Clamp(input.Throttle, 0, 1) : 0;

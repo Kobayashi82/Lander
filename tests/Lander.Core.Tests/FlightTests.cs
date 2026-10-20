@@ -86,7 +86,7 @@ public class FlightTests
             {
                 game.Step(world, new Sensors { UserIdleSeconds = 1 }, default);
                 game.DrainEvents(events);
-                if (events.Any(e => e.Kind == GameEventKind.Ignition))
+                if (events.Any(e => e.Kind == GameEventKind.Ignition) && game.Autopilot.Style == FlightStyle.HoverSlam)
                 {
                     maxFall = game.Body.Velocity.Y;
                 }

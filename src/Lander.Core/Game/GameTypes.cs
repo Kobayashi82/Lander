@@ -142,4 +142,10 @@ public sealed record GameOptions
     /// demasiado deprisa o llega torcido, y puede acabar en un aterrizaje duro o en un accidente.
     /// </summary>
     public double PilotErrors { get; init; }
+
+    /// <summary>
+    /// Ganas de acrobacias del piloto automático, de 0 (vuela siempre tranquilo: sin volteretas, caídas libres
+    /// ni saltos balísticos) a 1 (las hace a menudo). 0,5 es lo normal.
+    /// </summary>
+    public double Acrobatics { get; init; } = 0.5;
 }

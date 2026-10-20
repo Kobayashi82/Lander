@@ -59,6 +59,29 @@ public static class FlightGuidance
             RetractLegs: retractLegs);
     }
 
+    /// <summary>
+    /// Como <see cref="TrackVelocity"/>, pero sin inclinarse: el motor principal sostiene y da la altura y
+    /// los propulsores de traslación, el desplazamiento lateral, como al atracar una nave.
+    /// </summary>
+    public static ThrustInput TrackVelocityLevel(LanderBody body, PhysicsConfig config, Vec2 desiredVelocity, bool retractLegs = false)
+    {
+        var scale = body.Scale;
+        var gravity = config.Gravity * scale;
+        var thrustFactor = 1 - config.MaxDamageThrustPenalty * Math.Clamp(body.Damage, 0, 1);
+        var acceleration = (desiredVelocity - body.Velocity) * VelocityGain
+            + body.Velocity * config.LinearDrag
+            - body.ExternalAcceleration;
+
+        var up = gravity - acceleration.Y;
+        var throttle = up <= 0 ? 0 : up / (config.MainThrust * scale * thrustFactor * Math.Max(0.3, Math.Cos(body.Angle)));
+        var lateral = Math.Clamp(acceleration.X / (config.LateralThrust * scale * thrustFactor), -1, 1);
+        return new ThrustInput(
+            Throttle: Math.Clamp(throttle, 0, 1),
+            Rotate: RotateToward(body, config, 0),
+            Lateral: Math.Abs(lateral) < 0.04 ? 0 : lateral,
+            RetractLegs: retractLegs);
+    }
+
     /// <summary>Mando de los propulsores de giro para llevar la nave a <paramref name="desiredAngle"/>.</summary>
     public static double RotateToward(LanderBody body, PhysicsConfig config, double desiredAngle)
     {

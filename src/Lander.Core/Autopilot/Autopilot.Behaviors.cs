@@ -339,7 +339,7 @@ public sealed partial class Autopilot
         }
 
         var roll = random.NextDouble();
-        if (platform.Kind == PlatformKind.Window && Personality.Energy > 0.45 && body.FuelFraction > 0.5 && roll < 0.16
+        if (platform.Kind == PlatformKind.Window && Personality.Energy > 0.45 && body.FuelFraction > 0.5 && roll < 0.16 * Math.Min(1.5, ctx.Acrobatics * 2)
             && TryPlanEdgeDrop(ctx, platform))
         {
             return true;
@@ -393,16 +393,32 @@ public sealed partial class Autopilot
 
         var height = body.Height;
         var area = monitor.WorkArea.IsEmpty ? monitor.Bounds : monitor.WorkArea;
-        var margin = height * 1.6;
-        var top = FlightEnvelope.HighestCenter(world, body, new Vec2(area.Center.X, area.Top + height), 0.6);
+        var margin = height * 2.6;
+        var top = FlightEnvelope.HighestCenter(world, body, new Vec2(area.Center.X, area.Top + height), 1.1);
         var bottom = ground.Y - height * 3;
         if (double.IsNegativeInfinity(top) || bottom - top < height * 2 || area.Width < height * 10)
         {
             return false;
         }
 
-        // Destino: otro punto del suelo, bien lejos de donde está.
+        // A veces, en lugar de recorrer el monitor, un paseo a saltitos por la barra de tareas.
         var landingMargin = DestinationPicker.LandingMargin(body) + height * 0.4;
+        if (body.IsOnBase && body.Support?.OwnerId == ground.OwnerId && random.Chance(0.3))
+        {
+            var side = random.Sign();
+            for (var i = 0; i < 2; i++, side = -side)
+            {
+                var x = body.Position.X + side * height * random.Range(6.5, 13);
+                if (ground.ContainsX(x, landingMargin) && Destination.On(ground, x) is { } along && IsReachable(ctx, along))
+                {
+                    _plannedTour.Clear();
+                    BeginChoosing(ctx, along, FlightPurpose.Sightsee, BubbleIcon.Star);
+                    return true;
+                }
+            }
+        }
+
+        // Destino: otro punto del suelo, bien lejos de donde está.
         double? landX = null;
         for (var i = 0; i < 6 && landX is null; i++)
         {

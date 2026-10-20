@@ -524,6 +524,7 @@ public sealed class LanderGame
                 case PhysicsEventKind.TookOff:
                     Missions.OnTakeoff(physicsEvent.Platform, Body);
                     Races.OnTakeoff();
+                    Visual.PushOff(0.4 + Visual.CrouchLevel);
                     Emit(GameEventKind.TookOff, physicsEvent);
                     break;
 
@@ -984,6 +985,7 @@ public sealed class LanderGame
         _context.HoldStill = IsPaused || sensors.QuietMode;
         _context.VisitClock = Options.VisitClock;
         _context.PilotErrors = Options.PilotErrors;
+        _context.Acrobatics = Options.Acrobatics;
     }
 
     private void Emit(GameEventKind kind, in PhysicsEvent physicsEvent, bool manual = false) =>

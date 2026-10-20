@@ -1,13 +1,15 @@
 using Lander.Core.Game;
 using Lander.Core.Geometry;
 using Lander.Core.Physics;
+using Lander.Core.Terrain;
 
 namespace Lander.Core.Autopilot;
 
 /// <summary>
-/// El vuelo del piloto automático: elige una forma de llegar (crucero, rasante, perezoso, en arco o con
-/// una frenada en el último instante), la sigue con el controlador de vuelo y vigila el combustible y el
-/// techo durante todo el trayecto.
+/// El vuelo del piloto automático: elige una forma de llegar (ver <see cref="FlightStyle"/>), la sigue con el
+/// controlador de vuelo y vigila el combustible y el techo durante todo el trayecto. Las maniobras están en
+/// <c>Autopilot.Maneuvers.cs</c>, el salto balístico y el picado en <c>Autopilot.Ballistic.cs</c> y el
+/// aterrizaje en <c>Autopilot.Landing.cs</c>.
 /// </summary>
 public sealed partial class Autopilot
 {
@@ -15,7 +17,11 @@ public sealed partial class Autopilot
     public const double SlamTouchdownSpeed = 32;
 
     private const double SpoolSeconds = 0.4;
-    private const int ArcSamples = 32;
+
+    /// <summary>Vuelo de un tirón máximo, aunque se encadenen recuperaciones: después, a la base.</summary>
+    private const double MaxTotalFlightSeconds = 90;
+
+    private static readonly int StyleCount = Enum.GetValues<FlightStyle>().Length;
 
     private enum FlightPhase
     {
@@ -25,40 +31,27 @@ public sealed partial class Autopilot
         Drop,
         Burn,
         Approach,
+        Boost,
+        Coast,
+        Brake,
+        Flare,
     }
 
-    private readonly Vec2[] _arcPoints = new Vec2[ArcSamples + 1];
-    private readonly double[] _arcLengths = new double[ArcSamples + 1];
+    /// <summary>Lander de pega para prever trayectorias sin tocar el de verdad.</summary>
+    private readonly LanderBody _probe = new();
 
     private FlightStyle _style;
     private FlightPhase _phase;
     private double _flightTime;
+    private double _totalFlightTime;
     private double _airTime;
     private bool _airborneSeen;
     private double _cruiseY;
     private bool _spool;
-    private bool _leaf;
-    private double _leafTime;
-    private double _poiseDuration;
-    private bool _hopApex;
-    private bool _finalDescent;
+    private bool _boostTakeoff;
     private double _nextFuelCheck;
-
-    private bool _arcStarted;
-    private Vec2 _arcStart;
-    private double _arcApex;
-    private int _arcIndex;
-
-    private bool _flipPlanned;
-    private bool _flipDone;
-    private int _flipStage;
-    private double _flipTurned;
-    private double _flipDirection;
-    private double _flipPop;
-    private double _flipTime;
-
-    private readonly List<Vec2> _tour = [];
-    private readonly List<Vec2> _plannedTour = [];
+    private double _travelStartX;
+    private double _waggleCooldown = 10;
 
     private PilotMistake _mistake;
     private double _mistakeSeverity;
@@ -70,13 +63,16 @@ public sealed partial class Autopilot
     public PilotMistake Mistake => _mistake;
 
     /// <summary>Dando una voltereta en el aire.</summary>
-    public bool IsFlipping => _phase == FlightPhase.Flip;
+    public bool IsFlipping => _phase == FlightPhase.Flip || _coastFlipping;
 
-    /// <summary>Cayendo con el motor apagado antes de la frenada final.</summary>
-    public bool IsFreeFalling => _phase == FlightPhase.Drop;
+    /// <summary>Con el motor apagado a propósito: cayendo antes de la frenada final o en plena parábola.</summary>
+    public bool IsFreeFalling => _phase is FlightPhase.Drop or FlightPhase.Coast;
 
-    /// <summary>Frenando a fondo en el último instante.</summary>
-    public bool IsBurning => _phase == FlightPhase.Burn;
+    /// <summary>Frenando a fondo: frenada final, frenada de un salto balístico o encabritado tras un picado.</summary>
+    public bool IsBurning => _phase is FlightPhase.Burn or FlightPhase.Brake or FlightPhase.Flare;
+
+    /// <summary>Para los tests: obliga a volar con este estilo siempre que sea posible.</summary>
+    internal FlightStyle? ForcedStyle { get; set; }
 
     private void StartFlight(AutopilotContext ctx, Destination? destination, FlightPurpose purpose, AutopilotState state)
     {
@@ -86,11 +82,13 @@ public sealed partial class Autopilot
         State = state;
         _stateTime = 0;
         _flightTime = 0;
+        _totalFlightTime = 0;
         _airTime = 0;
         _celebrated = false;
         _airborneSeen = body.IsFlying;
         _hasFlown = true;
         _napping = false;
+        _travelStartX = body.Position.X;
 
         // Paseos seguidos (el salto al vacío empieza con un paseo hasta el borde y no cuenta).
         _strollStreak = purpose switch
@@ -99,13 +97,7 @@ public sealed partial class Autopilot
             FlightPurpose.EdgeDrop => _strollStreak,
             _ => 0,
         };
-        _phase = FlightPhase.Transit;
-        _arcStarted = false;
-        _flipDone = false;
-        _flipStage = 0;
-        _leaf = false;
-        _leafTime = 0;
-        _hopApex = false;
+        ResetManeuvers();
         _nextFuelCheck = 0;
         if (purpose != FlightPurpose.Celebrate)
         {
@@ -121,7 +113,10 @@ public sealed partial class Autopilot
             targetPoint = center;
         }
 
-        _style = ChooseStyle(ctx, purpose, targetPoint);
+        // Para esquivar con prisa, si hay sitio por encima, sale disparado con el impulso.
+        _boostTakeoff = purpose == FlightPurpose.Dodge && body.IsLanded && body.FuelFraction > 0.45 && HasRoomToBoost(ctx);
+
+        _style = ChooseStyle(ctx, purpose, destination, targetPoint);
         _cruiseY = PlanAltitude(ctx, _style, purpose, targetPoint);
         RollMistake(ctx, purpose);
 
@@ -130,17 +125,19 @@ public sealed partial class Autopilot
         if (_plannedTour.Count > 0 && purpose is FlightPurpose.Sightsee or FlightPurpose.Explore)
         {
             _tour.AddRange(_plannedTour);
-            if (_style == FlightStyle.Arc)
+            if (_style is FlightStyle.Arc or FlightStyle.Ballistic or FlightStyle.Swoop or FlightStyle.Hopper)
             {
                 _style = FlightStyle.Cruise;
             }
         }
 
         _plannedTour.Clear();
-        _poiseDuration = random.Range(0.35, 0.9);
-        _flipPlanned = (_style is FlightStyle.Cruise or FlightStyle.Arc or FlightStyle.Brisk || purpose == FlightPurpose.Sightsee)
-            && purpose is FlightPurpose.Explore or FlightPurpose.Investigate or FlightPurpose.Follow or FlightPurpose.Celebrate or FlightPurpose.Sightsee
-            && Personality.Energy > 0.55 && random.Chance((purpose == FlightPurpose.Sightsee ? 0.25 : 0.08) + 0.17 * Personality.Energy);
+        if (_style == FlightStyle.Hopper)
+        {
+            StartHopChain(ctx);
+        }
+
+        PlanFlip(ctx, purpose);
     }
 
     /// <summary>
@@ -152,7 +149,7 @@ public sealed partial class Autopilot
         _mistake = PilotMistake.None;
         _mistakeSeverity = 0;
         var clumsiness = Math.Clamp(ctx.PilotErrors, 0, 1);
-        if (clumsiness <= 0 || purpose is FlightPurpose.Recover or FlightPurpose.Dodge or FlightPurpose.Hop)
+        if (clumsiness <= 0 || purpose is FlightPurpose.Recover or FlightPurpose.Dodge or FlightPurpose.Hop || _style == FlightStyle.Hopper)
         {
             return;
         }
@@ -173,16 +170,19 @@ public sealed partial class Autopilot
         _mistake = roll < 0.35 ? PilotMistake.Overshoot : roll < 0.7 ? PilotMistake.FastTouchdown : PilotMistake.Wobble;
     }
 
-    /// <summary>Velocidad de contacto que busca en la aproximación final (más si se ha despistado).</summary>
     /// <summary>Margen con el que enciende el motor en la frenada final (más tarde si se ha despistado).</summary>
     private double IgnitionThreshold =>
         0.78 + (_mistake == PilotMistake.LateIgnition ? 0.12 + 0.5 * _mistakeSeverity * _mistakeSeverity : 0);
 
+    /// <summary>Velocidad de contacto que busca en la aproximación final (más si se ha despistado).</summary>
     private double ContactSpeed(double normal, double scale) =>
         (normal + (_mistake == PilotMistake.FastTouchdown ? 60 * _mistakeSeverity : 0)) * scale;
 
-    /// <summary>Elige cómo volar según la distancia, el desnivel, la energía y el combustible.</summary>
-    private FlightStyle ChooseStyle(AutopilotContext ctx, FlightPurpose purpose, Vec2 target)
+    /// <summary>
+    /// Elige cómo volar según la distancia, el desnivel, la energía, el combustible, lo que haya por el camino
+    /// y las ganas de acrobacias.
+    /// </summary>
+    private FlightStyle ChooseStyle(AutopilotContext ctx, FlightPurpose purpose, Destination? destination, Vec2 target)
     {
         if (purpose is FlightPurpose.Hop or FlightPurpose.Dodge or FlightPurpose.Recover or FlightPurpose.Stroll)
         {
@@ -194,37 +194,91 @@ public sealed partial class Autopilot
             return FlightStyle.HoverSlam;
         }
 
-        if (purpose == FlightPurpose.Sightsee)
-        {
-            // El final de un vuelo panorámico, muchas veces, en caída libre con frenada en el último momento.
-            return ctx.Body.FuelFraction > 0.55 && ctx.Body.Damage < 0.35 && random.Chance(0.45) ? FlightStyle.HoverSlam : FlightStyle.Cruise;
-        }
-
         var body = ctx.Body;
         var height = body.Height;
         var dx = Math.Abs(target.X - body.Position.X);
         var drop = target.Y - body.Position.Y;
         var energy = Personality.Energy;
         var lowFuel = body.FuelFraction < 0.45;
+        var healthy = body.FuelFraction > 0.3 && body.Damage < 0.35;
+
+        // 1 es lo normal; 0, ninguna acrobacia; 2, todas las que pueda.
+        var stunts = Math.Clamp(ctx.Acrobatics, 0, 1) * 2;
+        var weights = new double[StyleCount];
+        var hopper = body.IsLanded && destination is not null && _waypoint is null && purpose != FlightPurpose.Celebrate && TryPlanHops(ctx, destination);
+
+        if (purpose == FlightPurpose.Sightsee)
+        {
+            if (_plannedTour.Count == 0 && hopper)
+            {
+                return FlightStyle.Hopper;
+            }
+
+            // El final de un vuelo panorámico, muchas veces, en caída libre con frenada en el último momento.
+            weights[(int)FlightStyle.Cruise] = 1;
+            weights[(int)FlightStyle.HoverSlam] = body.FuelFraction > 0.55 && body.Damage < 0.35 ? 0.8 * stunts : 0;
+            return Pick(weights);
+        }
 
         // La frenada en el último instante solo con la nave sana y combustible para corregir si algo va mal.
-        var slamFeasible = body.FuelFraction > 0.3 && body.Damage < 0.35
-            && target.Y - PlanAltitude(ctx, FlightStyle.HoverSlam, purpose, target) >= height * 6;
+        var slamFeasible = healthy && target.Y - PlanAltitude(ctx, FlightStyle.HoverSlam, purpose, target) >= height * 6;
 
-        var weights = new double[6];
         weights[(int)FlightStyle.Cruise] = 1;
         weights[(int)FlightStyle.Brisk] = dx > height * 5 && !lowFuel ? 0.25 + 0.5 * energy : 0;
         weights[(int)FlightStyle.Lazy] = energy < 0.5 && !lowFuel && dx < height * 15 ? (0.5 - energy) * 2.4 : 0;
         weights[(int)FlightStyle.Arc] = dx > height * 4 ? 0.7 : 0;
-        weights[(int)FlightStyle.HoverSlam] = slamFeasible ? (drop > height * 8 ? 1 : 0.55) : 0;
+        weights[(int)FlightStyle.HoverSlam] = slamFeasible ? (drop > height * 8 ? 1 : 0.55) * stunts : 0;
         if (purpose == FlightPurpose.ReturnToBase && slamFeasible)
         {
             // Caer con el motor apagado es la forma más económica de bajar.
             weights[(int)FlightStyle.HoverSlam] *= 2;
         }
 
-        var index = random.PickWeighted(weights);
-        return index < 0 ? FlightStyle.Cruise : (FlightStyle)index;
+        // Saltitos: el destino está en la misma plataforma, un poco más allá.
+        weights[(int)FlightStyle.Hopper] = hopper ? 2.5 : 0;
+
+        // Nivelado y con los propulsores de traslación: para distancias cortas y sitios delicados.
+        var delicate = purpose == FlightPurpose.Perch || destination?.Kind == PlatformKind.Content;
+        weights[(int)FlightStyle.Precision] = dx < height * 14 && Math.Abs(drop) < height * 8 ? (delicate ? 1.6 : 0.45) : 0;
+
+        weights[(int)FlightStyle.Contour] = dx > height * 10 && !lowFuel && SkylineVaries(ctx, target) ? 1 : 0;
+        weights[(int)FlightStyle.Swoop] = drop > height * 3 && dx > height * 5 && energy > 0.4 && healthy && !lowFuel
+            ? 1.1 * (0.4 + 0.6 * stunts) : 0;
+        weights[(int)FlightStyle.Dolphin] = dx > height * 10 && energy > 0.5 && !lowFuel && HasRoomToUndulate(ctx, purpose, target) ? 0.8 * stunts : 0;
+        weights[(int)FlightStyle.Ballistic] = stunts > 0 && dx > height * 7 && healthy && energy > 0.35 && TryPlanBallistic(ctx, target)
+            ? 1.6 * stunts : 0;
+
+        return Pick(weights);
+
+        FlightStyle Pick(double[] candidates)
+        {
+            if (ForcedStyle is { } forced && candidates[(int)forced] > 0)
+            {
+                return forced;
+            }
+
+            var index = random.PickWeighted(candidates);
+            return index < 0 ? FlightStyle.Cruise : (FlightStyle)index;
+        }
+    }
+
+    /// <summary>Hay ventanas a alturas bastante distintas entre el lander y su destino: vale la pena seguir el relieve.</summary>
+    private static bool SkylineVaries(AutopilotContext ctx, Vec2 target)
+    {
+        var body = ctx.Body;
+        var low = double.MinValue;
+        var high = double.MaxValue;
+        for (var i = 1; i < 8; i++)
+        {
+            var x = MathUtil.Lerp(body.Position.X, target.X, i / 8.0);
+            if (ctx.World.PlatformBelow(x, body.Position.Y - body.Height * 6) is { } below)
+            {
+                low = Math.Max(low, below.Y);
+                high = Math.Min(high, below.Y);
+            }
+        }
+
+        return low - high > body.Height * 2.5;
     }
 
     /// <summary>Altura (Y del centro) a la que viajar, siempre bajo el techo y nunca por debajo del destino.</summary>
@@ -264,29 +318,63 @@ public sealed partial class Autopilot
                 FlightPurpose.Stroll => height * random.Range(0.5, 0.9),
                 _ => height * random.Range(0.8, 1.3),
             },
+            FlightStyle.Hopper => height * random.Range(0.55, 0.9),
             FlightStyle.Brisk => height * random.Range(0.6, 1.1),
             FlightStyle.Lazy => height * random.Range(0.8, 1.5),
+            FlightStyle.Precision => height * random.Range(0.9, 1.4),
+            FlightStyle.Swoop => height * random.Range(1.5, 3),
             _ => height * random.Range(1.4, 3),
         };
 
-        var floor = style is FlightStyle.Cruise or FlightStyle.Arc ? top + height * 0.8 : top;
-        var preferred = Math.Max(higher - climb, floor);
-        var cruise = Math.Min(preferred, Math.Max(top, target.Y - height * 0.5));
-
-        // Con el destino pegado al techo, lo justo por encima de él para llegar siempre desde arriba.
-        var ceiling = FlightEnvelope.HighestCenter(ctx.World, body, target);
-        return Math.Max(Math.Min(cruise, target.Y - height * 0.25), double.IsNegativeInfinity(ceiling) ? cruise : ceiling);
+        var floor = style switch
+        {
+            FlightStyle.Cruise or FlightStyle.Arc => top + height * 0.8,
+            FlightStyle.Dolphin => top + DolphinAmplitude(height) + height * 0.4,
+            _ => top,
+        };
+        return ReachableCruise(ctx, target, Math.Max(higher - climb, floor));
     }
 
-    private ThrustInput Takeoff() =>
-        _spool && _flightTime < SpoolSeconds
-            ? new ThrustInput(Throttle: 0.3, Stabilize: true, LandOn: ThrustInput.GroundOnly)
-            : new ThrustInput(Throttle: 1, Stabilize: true, LandOn: ThrustInput.GroundOnly);
+    /// <summary>
+    /// Ajusta una altura de crucero para que siempre se pueda llegar al destino desde arriba: nunca por debajo
+    /// de él ni pegada al techo (con el destino pegado al techo, lo justo por encima de él).
+    /// </summary>
+    private static double ReachableCruise(AutopilotContext ctx, Vec2 target, double preferred)
+    {
+        var body = ctx.Body;
+        var cruise = Math.Max(preferred, FlightEnvelope.HighestCenter(ctx.World, body, body.Position, 0.3));
+        cruise = Math.Min(cruise, target.Y - body.Height * 0.25);
+        var ceiling = FlightEnvelope.HighestCenter(ctx.World, body, target);
+        return double.IsNegativeInfinity(ceiling) ? cruise : Math.Max(cruise, ceiling);
+    }
+
+    private ThrustInput Takeoff(AutopilotContext ctx)
+    {
+        if (_hopPause > 0)
+        {
+            // Entre saltito y saltito: las patas se encogen un instante antes de volver a saltar.
+            _hopPause -= ctx.Dt;
+            ctx.Visual.Crouch = 1;
+            return ThrustInput.None;
+        }
+
+        if (_spool && _flightTime < SpoolSeconds)
+        {
+            ctx.Visual.Crouch = 1;
+            return new ThrustInput(Throttle: 0.3, Stabilize: true, LandOn: ThrustInput.GroundOnly);
+        }
+
+        var boost = _boostTakeoff;
+        _boostTakeoff = false;
+        return new ThrustInput(Throttle: 1, Stabilize: true, Boost: boost, LandOn: ThrustInput.GroundOnly);
+    }
 
     private ThrustInput UpdateCruise(AutopilotContext ctx)
     {
         var body = ctx.Body;
         _flightTime += ctx.Dt;
+        _totalFlightTime += ctx.Dt;
+        _waggleCooldown -= ctx.Dt;
 
         if (body.IsFlying)
         {
@@ -297,17 +385,28 @@ public sealed partial class Autopilot
         {
             if (_airborneSeen)
             {
-                OnArrived(ctx);
+                if (!TryNextHop(ctx))
+                {
+                    OnArrived(ctx);
+                }
+
                 return ThrustInput.None;
             }
 
-            return Takeoff();
+            return Takeoff(ctx);
         }
 
         if (_flightTime > (_purpose == FlightPurpose.Sightsee ? MaxFlightSeconds * 1.8 : MaxFlightSeconds) && _purpose != FlightPurpose.Recover)
         {
             _waypoint = null;
             Retarget(ctx, DestinationPicker.PickBelow(ctx.World, body, body.Position, BrakingDistance(body, ctx.Physics)), FlightPurpose.Recover);
+        }
+        else if (_totalFlightTime > MaxTotalFlightSeconds && _purpose == FlightPurpose.Recover)
+        {
+            // Algo impide posarse donde quería: mejor la base, que siempre tiene sitio.
+            _totalFlightTime = 0;
+            Retarget(ctx, DestinationPicker.PickBase(ctx.World, body, random), FlightPurpose.ReturnToBase);
+            State = AutopilotState.ReturningToBase;
         }
 
         if (!TryResolveTarget(ctx, out var target))
@@ -337,55 +436,19 @@ public sealed partial class Autopilot
         }
 
         ctx.Visual.LookTarget = target;
+        WaggleAtCursor(ctx);
         if (IsShortHop(ctx, target))
         {
             return UpdateHop(ctx, target);
         }
 
-        return _style == FlightStyle.Arc ? UpdateArc(ctx, target) : UpdateTransit(ctx, target);
-    }
-
-    /// <summary>Saltitos (paseos, sustos, esquivas): cerca y casi a la misma altura.</summary>
-    private bool IsShortHop(AutopilotContext ctx, Vec2 target) =>
-        _style == FlightStyle.Direct && _purpose is FlightPurpose.Stroll or FlightPurpose.Hop or FlightPurpose.Dodge
-        && Math.Abs(target.X - ctx.Body.Position.X) < ctx.Body.Height * 8
-        && Math.Abs(target.Y - ctx.Body.Position.Y) < ctx.Body.Height * 2.5;
-
-    /// <summary>
-    /// Un salto corto y ágil: sube hasta la altura del salto, se desplaza y baja en cuanto está encima,
-    /// sin la parada en estacionario de una aproximación normal.
-    /// </summary>
-    private ThrustInput UpdateHop(AutopilotContext ctx, Vec2 target)
-    {
-        var body = ctx.Body;
-        var scale = body.Scale;
-        var height = body.Height;
-        var dx = target.X - body.Position.X;
-        var above = target.Y - body.Position.Y;
-        if (!_hopApex && (body.Position.Y <= _cruiseY + height * 0.15 || _airTime > 1.1))
+        return _style switch
         {
-            _hopApex = true;
-        }
-
-        var vx = Math.Sign(dx) * Math.Min(170 * scale, MathUtil.ApproachSpeed(dx, 70 * scale, body.Velocity.X, 0.45));
-        if (!_hopApex || Math.Abs(dx) > height * 0.6 || Math.Abs(body.Velocity.X) > 45 * scale)
-        {
-            var dy = _cruiseY - body.Position.Y;
-            var vy = Math.Sign(dy) * Math.Min(150 * scale, MathUtil.ApproachSpeed(dy, 120 * scale, body.Velocity.Y, 0.1));
-            return Steer(ctx, new Vec2(_hopApex ? vx : vx * 0.3, vy), retractLegs: false, maxTilt: 0.6);
-        }
-
-        // Ya encima: a por el destino, terminando de centrarse mientras baja.
-        State = AutopilotState.Landing;
-        if (above > height * 0.6)
-        {
-            var descent = Math.Clamp(MathUtil.ApproachSpeed(above - height * 0.2, 70 * scale, body.Velocity.Y, 0.1), 32 * scale, 60 * scale);
-            return Steer(ctx, new Vec2(Math.Clamp(vx, -35 * scale, 35 * scale), descent), retractLegs: false, maxTilt: 0.2);
-        }
-
-        // Los últimos centímetros, recto: el contacto tiene que ser con la nave nivelada.
-        var settle = Math.Abs(body.Angle) > 0.09 || Math.Abs(dx) > height * 0.25 ? 0 : ContactSpeed(36, scale);
-        return Steer(ctx, new Vec2(Math.Clamp(dx * 1.5, -20 * scale, 20 * scale), settle), retractLegs: false, maxTilt: 0.06);
+            FlightStyle.Arc => UpdateArc(ctx, target),
+            FlightStyle.Ballistic => UpdateBallistic(ctx, target),
+            FlightStyle.Swoop => UpdateSwoop(ctx, target),
+            _ => UpdateTransit(ctx, target),
+        };
     }
 
     private bool TryResolveTarget(AutopilotContext ctx, out Vec2 target)
@@ -408,10 +471,16 @@ public sealed partial class Autopilot
         FlightStyle.Lazy => new Profile(170, 0.4, 45),
         FlightStyle.Arc => new Profile(260, 0.65, 75),
         FlightStyle.HoverSlam => new Profile(240, 0.6, 75),
+        FlightStyle.Contour => new Profile(250, 0.66, 85),
+        FlightStyle.Precision => new Profile(150, 0, 60),
+        FlightStyle.Dolphin => new Profile(240, 0.62, 75),
         _ => new Profile(230, FlightGuidance.DefaultMaxTilt, 70),
     };
 
-    /// <summary>Desplazamiento a la altura de crucero hasta quedar sobre el destino.</summary>
+    /// <summary>
+    /// Desplazamiento hasta quedar sobre el destino: a la altura de crucero, siguiendo el relieve, ondulando o
+    /// nivelado con los propulsores de traslación, según el estilo.
+    /// </summary>
     private ThrustInput UpdateTransit(AutopilotContext ctx, Vec2 target)
     {
         var body = ctx.Body;
@@ -440,577 +509,125 @@ public sealed partial class Autopilot
 
         var energyFactor = 0.55 + 0.45 * Personality.Energy;
         var cruiseSpeed = (_purpose == FlightPurpose.Dodge ? 260 : profile.Speed) * scale * energyFactor;
-        var vx = Math.Sign(dx) * Math.Min(cruiseSpeed, MathUtil.ApproachSpeed(dx, profile.Braking * scale * (_mistake == PilotMistake.Overshoot ? 1.5 + 1.5 * _mistakeSeverity : 1), body.Velocity.X));
+        var braking = profile.Braking * scale * (_mistake == PilotMistake.Overshoot ? 1.5 + 1.5 * _mistakeSeverity : 1);
+        var vx = Math.Sign(dx) * Math.Min(cruiseSpeed, MathUtil.ApproachSpeed(dx, braking, body.Velocity.X));
         if (_airTime < 0.45 && _purpose is not (FlightPurpose.Recover or FlightPurpose.Dodge))
         {
             vx = 0;
         }
 
-        var dy = _cruiseY - body.Position.Y;
-        var vy = Math.Sign(dy) * Math.Min(170 * scale, MathUtil.ApproachSpeed(dy, 90 * scale, body.Velocity.Y, 0.1));
+        var altitude = _style switch
+        {
+            FlightStyle.Contour => ContourAltitude(ctx, target),
+            FlightStyle.Dolphin => DolphinAltitude(ctx, target),
+            _ => _cruiseY,
+        };
+        var dy = altitude - body.Position.Y;
+        var climbRate = _style == FlightStyle.Contour ? 200 : 170;
+        var vy = Math.Sign(dy) * Math.Min(climbRate * scale, MathUtil.ApproachSpeed(dy, (_style == FlightStyle.Contour ? 140 : 90) * scale, body.Velocity.Y, 0.1));
+        if (_style == FlightStyle.Dolphin)
+        {
+            vy += DolphinSlope(ctx, target) * body.Velocity.X;
+        }
 
         var retractLegs = _airTime > 0.6 && body.Position.Y < target.Y - height * 4 && Math.Abs(dx) > height * 3;
-        return Steer(ctx, new Vec2(vx, vy), retractLegs, profile.Tilt);
+        return _style == FlightStyle.Precision
+            ? SteerLevel(ctx, new Vec2(vx, vy))
+            : Steer(ctx, new Vec2(vx, vy), retractLegs, profile.Tilt);
     }
 
-    /// <summary>Un arco amplio (curva de Bézier) desde el despegue hasta un punto sobre el destino.</summary>
-    private ThrustInput UpdateArc(AutopilotContext ctx, Vec2 target)
-    {
-        var body = ctx.Body;
-        var scale = body.Scale;
-        var height = body.Height;
-        if (!_arcStarted)
-        {
-            if (_airTime < 0.35)
-            {
-                return Steer(ctx, new Vec2(0, -110 * scale));
-            }
-
-            _arcStarted = true;
-            _arcStart = body.Position;
-            _arcIndex = 0;
-            BuildArc(ctx, target + new Vec2(0, -height * 1.4));
-            if (!ArcClearsGround(ctx, target))
-            {
-                // El arco rozaría el suelo de otro monitor por el camino: mejor un crucero.
-                _style = FlightStyle.Cruise;
-                _cruiseY = PlanAltitude(ctx, FlightStyle.Cruise, _purpose, target);
-                return UpdateTransit(ctx, target);
-            }
-        }
-
-        BuildArc(ctx, target + new Vec2(0, -height * 1.4));
-
-        var best = _arcIndex;
-        var bestDistance = double.MaxValue;
-        for (var i = _arcIndex; i <= Math.Min(ArcSamples, _arcIndex + 6); i++)
-        {
-            var distance = (_arcPoints[i] - body.Position).LengthSquared;
-            if (distance < bestDistance)
-            {
-                bestDistance = distance;
-                best = i;
-            }
-        }
-
-        _arcIndex = best;
-        var total = _arcLengths[ArcSamples];
-        var travelled = _arcLengths[best];
-        var remaining = Math.Max(0, total - travelled) + Math.Sqrt(bestDistance) * 0.5;
-        if (remaining < height * 0.8 || best == ArcSamples)
-        {
-            BeginApproach(ctx, target);
-            return UpdateLanding(ctx);
-        }
-
-        var lookahead = Math.Max(height * 1.1, body.Velocity.Length * 0.35);
-        var carrot = PointOnArc(travelled + lookahead);
-        var profile = ProfileOf(FlightStyle.Arc);
-        var speed = Math.Min(
-            profile.Speed * scale * (0.55 + 0.45 * Personality.Energy),
-            Math.Min(MathUtil.BrakingSpeed(remaining, profile.Braking * scale), 70 * scale + MathUtil.BrakingSpeed(travelled, 140 * scale)));
-        var direction = (carrot - body.Position).Normalized();
-        var retract = remaining > height * 4 && travelled > height * 2;
-        return Steer(ctx, direction * speed, retract, profile.Tilt);
-    }
-
-    private void BuildArc(AutopilotContext ctx, Vec2 end)
-    {
-        var body = ctx.Body;
-        var start = _arcStart;
-        var middle = Vec2.Lerp(start, end, 0.5);
-
-        // Punto más alto de la curva: el elegido, pero siempre bajo el techo.
-        var peak = Math.Min(start.Y, end.Y) - _arcApex;
-        var limit = FlightEnvelope.HighestCenter(ctx.World, body, middle, 0.3);
-        if (!double.IsNegativeInfinity(limit))
-        {
-            peak = Math.Max(peak, limit);
-        }
-
-        peak = Math.Min(peak, Math.Min(start.Y, end.Y));
-        var control = new Vec2(middle.X, (peak - 0.25 * (start.Y + end.Y)) * 2);
-        _arcLengths[0] = 0;
-        for (var i = 0; i <= ArcSamples; i++)
-        {
-            var u = (double)i / ArcSamples;
-            var a = (1 - u) * (1 - u);
-            var b = 2 * u * (1 - u);
-            var c = u * u;
-            _arcPoints[i] = new Vec2(a * start.X + b * control.X + c * end.X, a * start.Y + b * control.Y + c * end.Y);
-            if (i > 0)
-            {
-                _arcLengths[i] = _arcLengths[i - 1] + Vec2.Distance(_arcPoints[i], _arcPoints[i - 1]);
-            }
-        }
-    }
-
-    /// <summary>Ningún tramo del arco (salvo el final) pasa demasiado cerca de un suelo.</summary>
-    private bool ArcClearsGround(AutopilotContext ctx, Vec2 target)
-    {
-        var body = ctx.Body;
-        var feetAtTarget = target.Y + body.HalfHeight;
-        for (var i = 0; i <= ArcSamples * 0.85; i++)
-        {
-            var point = _arcPoints[i];
-            foreach (var platform in ctx.World.Platforms)
-            {
-                if (platform.Kind == Terrain.PlatformKind.Ground && platform.Y < feetAtTarget - 1
-                    && platform.Right >= point.X - body.HalfWidth && platform.Left <= point.X + body.HalfWidth
-                    && point.Y + body.HalfHeight + body.Height * 0.5 > platform.Y && point.Y < platform.Y)
-                {
-                    return false;
-                }
-            }
-        }
-
-        return true;
-    }
-
-    private Vec2 PointOnArc(double length)
-    {
-        if (length >= _arcLengths[ArcSamples])
-        {
-            return _arcPoints[ArcSamples];
-        }
-
-        for (var i = 1; i <= ArcSamples; i++)
-        {
-            if (_arcLengths[i] >= length)
-            {
-                var span = _arcLengths[i] - _arcLengths[i - 1];
-                var t = span > 0 ? (length - _arcLengths[i - 1]) / span : 0;
-                return Vec2.Lerp(_arcPoints[i - 1], _arcPoints[i], t);
-            }
-        }
-
-        return _arcPoints[ArcSamples];
-    }
-
-    private ThrustInput FlyToWaypoint(AutopilotContext ctx, Vec2 waypoint)
-    {
-        var body = ctx.Body;
-        var scale = body.Scale;
-        ctx.Visual.LookTarget = waypoint + new Vec2(0, body.Height);
-
-        var delta = waypoint - body.Position;
-        if (delta.Length < body.Height * 0.6 && body.Velocity.Length < 50 * scale)
-        {
-            if (!_celebrated)
-            {
-                _celebrated = true;
-                ctx.Visual.CelebrateTime = 2;
-                ctx.Visual.Flash(Expression.Happy, 2.5);
-                ctx.Visual.ShowBubble(new Bubble(BubbleIcon.Heart, 1.8));
-                ctx.Signals.Add(GameEventKind.Celebrated);
-            }
-
-            _waypointHold -= ctx.Dt;
-            if (_waypointHold <= 0)
-            {
-                _waypoint = null;
-                if (_destination is not null && _destination.TryResolve(ctx.World, body, out var target, out _))
-                {
-                    _cruiseY = Math.Max(Math.Min(body.Position.Y, target.Y) - body.Height * 0.5, FlightEnvelope.HighestCenter(ctx.World, body, body.Position, 0.3));
-                }
-            }
-        }
-
-        var vx = Math.Sign(delta.X) * Math.Min(230 * scale, MathUtil.BrakingSpeed(delta.X, 70 * scale));
-        var vy = Math.Sign(delta.Y) * Math.Min(170 * scale, MathUtil.BrakingSpeed(delta.Y, 90 * scale));
-        return Steer(ctx, new Vec2(vx, vy));
-    }
-
-    // Vuelo panorámico ---------------------------------------------------------------------------------
+    // Rasante siguiendo el relieve ---------------------------------------------------------------------------
 
     /// <summary>
-    /// Pasa por los puntos del recorrido sin pararse (siguiendo una «zanahoria» un poco por delante) y,
-    /// al terminar, sigue hacia su destino con el estilo elegido.
+    /// Altura para pasar a algo más de una altura del lander por encima de lo que tiene delante (ventanas o
+    /// suelo), mirando más lejos cuanto más deprisa va. Cerca del destino, la de crucero normal.
     /// </summary>
-    private ThrustInput FlyTour(AutopilotContext ctx, Vec2 target)
+    private double ContourAltitude(AutopilotContext ctx, Vec2 target)
     {
         var body = ctx.Body;
-        var scale = body.Scale;
         var height = body.Height;
-        var point = _tour[0];
-        ctx.Visual.LookTarget = point;
-        if (Vec2.Distance(point, body.Position) < height * (_tour.Count > 1 ? 1.4 : 0.9))
+        var x = body.Position.X;
+        var dx = target.X - x;
+        if (Math.Abs(dx) < height * 3)
         {
-            _tour.RemoveAt(0);
-            if (_tour.Count == 0)
+            return _cruiseY;
+        }
+
+        var ahead = Math.Sign(dx) * (Math.Abs(body.Velocity.X) * 1.1 + height * 2.5);
+        var from = Math.Min(x, x + ahead) - body.HalfWidth;
+        var to = Math.Max(x, x + ahead) + body.HalfWidth;
+        var surface = double.MaxValue;
+        foreach (var platform in ctx.World.Platforms)
+        {
+            if (platform.Right >= from && platform.Left <= to && platform.Y > body.Position.Y - height * 8)
             {
-                // Recorrido terminado: crucero (o caída libre) a la altura a la que va.
-                var top = FlightEnvelope.HighestCenter(ctx.World, body, body.Position, 0.3);
-                _cruiseY = Math.Min(Math.Max(body.Position.Y, top), target.Y - height * 0.5);
-                if (_style == FlightStyle.HoverSlam && target.Y - _cruiseY < height * 6)
-                {
-                    _style = FlightStyle.Cruise;
-                }
-
-                return UpdateTransit(ctx, target);
-            }
-
-            point = _tour[0];
-        }
-
-        if (_airTime < 0.45)
-        {
-            return Steer(ctx, new Vec2(0, -120 * scale));
-        }
-
-        var delta = point - body.Position;
-        var distance = delta.Length;
-        var cruise = 210 * scale * (0.6 + 0.4 * Personality.Energy);
-
-        // Solo frena de verdad hacia el último punto; entre medias, curva sin pararse.
-        var speed = _tour.Count == 1
-            ? Math.Min(cruise, 60 * scale + MathUtil.ApproachSpeed(distance, 80 * scale, body.Velocity.Length))
-            : cruise;
-        return Steer(ctx, delta / Math.Max(1, distance) * speed, retractLegs: true, maxTilt: 0.62);
-    }
-
-    // Voltereta ----------------------------------------------------------------------------------------
-
-    /// <summary>
-    /// Una voltereta cuando hay sitio de sobra: un empujón hacia arriba, motor apagado, una vuelta completa
-    /// con los propulsores de giro y recuperación. El empujón se calcula para no llegar al techo.
-    /// </summary>
-    private bool TryStartFlip(AutopilotContext ctx)
-    {
-        var body = ctx.Body;
-        if (!_flipPlanned || _flipDone || _phase != FlightPhase.Transit || _airTime < 1.2 || _waypoint is not null)
-        {
-            return false;
-        }
-
-        var scale = body.Scale;
-        var height = body.Height;
-        if (body.Velocity.Length > 150 * scale || Math.Abs(body.Angle) > 0.15 || body.FuelFraction < 0.35)
-        {
-            return false;
-        }
-
-        var highest = FlightEnvelope.HighestCenter(ctx.World, body, body.Position, 0.2);
-        var room = double.IsNegativeInfinity(highest) ? height * 20 : body.Position.Y - highest;
-        var gravity = ctx.Physics.Gravity * scale;
-        var pop = Math.Min(250 * scale, Math.Sqrt(2 * gravity * Math.Max(0, room - height * 0.4)) * 0.92);
-        var groundGap = GroundBelow(ctx, body.Position) - body.FeetY;
-        if (pop < 200 * scale || groundGap < height * 4)
-        {
-            return false;
-        }
-
-        _phase = FlightPhase.Flip;
-        _flipStage = 0;
-        _flipPop = pop;
-        _flipTurned = 0;
-        _flipTime = 0;
-        _flipDirection = body.Velocity.X > 5 * scale ? 1 : body.Velocity.X < -5 * scale ? -1 : random.Sign();
-        ctx.Visual.Flash(Expression.Happy, 3.5);
-        return true;
-    }
-
-    private ThrustInput UpdateFlip(AutopilotContext ctx)
-    {
-        var body = ctx.Body;
-        var config = ctx.Physics;
-        var dt = ctx.Dt;
-        _flipTime += dt;
-        if (_flipTime > 5 || body.Fuel <= 0)
-        {
-            EndFlip(ctx);
-            return Steer(ctx, Vec2.Zero);
-        }
-
-        if (_flipStage == 0)
-        {
-            // Empujón hacia arriba, sin pasarse: lo que suba ahora es lo que subirá sin motor.
-            var highest = FlightEnvelope.HighestCenter(ctx.World, body, body.Position, 0.2);
-            if (body.Velocity.Y > -_flipPop && FlightEnvelope.CoastApex(body, config) > highest)
-            {
-                return new ThrustInput(Throttle: 1, Rotate: FlightGuidance.RotateToward(body, config, 0), LandOn: ThrustInput.GroundOnly);
-            }
-
-            _flipStage = 1;
-        }
-
-        _flipTurned += body.AngularVelocity * dt * _flipDirection;
-        if (_flipStage == 1)
-        {
-            var omega = Math.Abs(body.AngularVelocity);
-            var stopping = omega * omega / (2 * config.RotationAcceleration * 0.85);
-            if (_flipTurned < Math.Tau - stopping - 0.05)
-            {
-                return new ThrustInput(Rotate: _flipDirection, LandOn: ThrustInput.GroundOnly);
-            }
-
-            _flipStage = 2;
-        }
-
-        if (_flipTurned > Math.PI && Math.Abs(body.Angle) < 0.3 && Math.Abs(body.AngularVelocity) < 1.2)
-        {
-            EndFlip(ctx);
-            ctx.Signals.Add(GameEventKind.Flipped);
-            return UpdateCruiseAfterFlip(ctx);
-        }
-
-        return new ThrustInput(Rotate: FlightGuidance.RotateToward(body, config, 0), LandOn: ThrustInput.GroundOnly);
-    }
-
-    private void EndFlip(AutopilotContext ctx)
-    {
-        _phase = FlightPhase.Transit;
-        _flipDone = true;
-        var body = ctx.Body;
-
-        // Tras la voltereta se sigue a la altura que haya quedado (sin volver a subir).
-        _cruiseY = Math.Max(_cruiseY, Math.Min(body.Position.Y, _cruiseY + body.Height * 2));
-    }
-
-    private ThrustInput UpdateCruiseAfterFlip(AutopilotContext ctx) =>
-        TryResolveTarget(ctx, out var target) ? UpdateTransit(ctx, target) : Steer(ctx, Vec2.Zero);
-
-    // Aterrizaje ---------------------------------------------------------------------------------------
-
-    private void BeginApproach(AutopilotContext ctx, Vec2 target)
-    {
-        var body = ctx.Body;
-        State = AutopilotState.Landing;
-        _stateTime = 0;
-        _phase = FlightPhase.Approach;
-        var drop = target.Y - body.Position.Y;
-        _leaf = _style == FlightStyle.Lazy && drop > body.Height * 4 && drop < body.Height * 12
-            && body.Fuel > FuelPlanner.HoverBurn(body, ctx.Physics) * (drop / (55 * body.Scale) + 6) + FuelPlanner.Reserve(body);
-        _leafTime = 0;
-        _finalDescent = false;
-    }
-
-    private ThrustInput UpdateLanding(AutopilotContext ctx)
-    {
-        var body = ctx.Body;
-        if (body.IsLanded)
-        {
-            if (_airborneSeen)
-            {
-                OnArrived(ctx);
-                return ThrustInput.None;
-            }
-
-            _flightTime += ctx.Dt;
-            return Takeoff();
-        }
-
-        _airborneSeen = true;
-        _airTime += ctx.Dt;
-        _flightTime += ctx.Dt;
-        if (_destination is null || !_destination.TryResolve(ctx.World, body, out var target, out _))
-        {
-            Replan(ctx);
-            State = _purpose == FlightPurpose.ReturnToBase ? AutopilotState.ReturningToBase : AutopilotState.Flying;
-            return Steer(ctx, Vec2.Zero);
-        }
-
-        // Una aproximación que no termina (algo raro en el terreno): mejor posarse en lo que haya debajo.
-        if (_stateTime > 25 && _purpose != FlightPurpose.Recover)
-        {
-            Retarget(ctx, DestinationPicker.PickBelow(ctx.World, body, body.Position, BrakingDistance(body, ctx.Physics)), FlightPurpose.Recover);
-            State = AutopilotState.Flying;
-            return Steer(ctx, Vec2.Zero);
-        }
-
-        ctx.Visual.LookTarget = target + new Vec2(0, body.Height);
-        if (_phase == FlightPhase.Transit && IsShortHop(ctx, target))
-        {
-            return UpdateHop(ctx, target);
-        }
-
-        return _phase switch
-        {
-            FlightPhase.Poise => UpdatePoise(ctx, target),
-            FlightPhase.Drop => UpdateDrop(ctx, target),
-            FlightPhase.Burn => UpdateBurn(ctx, target),
-            _ => UpdateApproach(ctx, target),
-        };
-    }
-
-    /// <summary>Aproximación prudente: centrarse, estabilizar en estacionario y bajar despacio.</summary>
-    private ThrustInput UpdateApproach(AutopilotContext ctx, Vec2 target)
-    {
-        var body = ctx.Body;
-        var scale = body.Scale;
-        var height = body.Height;
-        var dx = target.X - body.Position.X;
-        var heightAbove = target.Y - body.Position.Y;
-
-        // Con el despiste de altura cree que el destino está más abajo de lo que está y frena tarde.
-        var perceived = heightAbove + (_mistake == PilotMistake.FastTouchdown ? height * (0.6 + 4 * _mistakeSeverity) : 0);
-
-        // La plataforma ha subido por encima: volver a ganar altura.
-        if (heightAbove < -height * 0.3)
-        {
-            _cruiseY = Math.Max(target.Y - height * 1.5, FlightEnvelope.HighestCenter(ctx.World, body, target, 0.3));
-            _phase = FlightPhase.Transit;
-            _style = _style is FlightStyle.HoverSlam or FlightStyle.Arc ? FlightStyle.Cruise : _style;
-            State = _purpose == FlightPurpose.ReturnToBase ? AutopilotState.ReturningToBase : AutopilotState.Flying;
-            return Steer(ctx, new Vec2(Math.Clamp(dx, -40 * scale, 40 * scale), -80 * scale));
-        }
-
-        var vxNow = Math.Abs(body.Velocity.X);
-        double vx;
-        double vy;
-        double maxTilt;
-        if (_leaf && heightAbove > height * 1.5)
-        {
-            // Como una hoja: balanceándose de lado a lado mientras baja.
-            _leafTime += ctx.Dt;
-            var amplitude = height * 1.1 * Math.Clamp((heightAbove - height * 1.5) / (height * 3), 0, 1);
-            var offset = amplitude * Math.Sin(_leafTime * 2.1);
-            vx = Math.Clamp((dx + offset) * 2.2, -75 * scale, 75 * scale);
-            vy = 55 * scale;
-            maxTilt = 0.4;
-        }
-        else if (Math.Abs(dx) > height * 0.9)
-        {
-            vx = Math.Clamp(dx * 1.2, -60 * scale, 60 * scale);
-            vy = 0;
-            maxTilt = 0.35;
-        }
-        else if (perceived > height * 1.5)
-        {
-            vx = Math.Clamp(dx, -40 * scale, 40 * scale);
-            var hurry = _mistake == PilotMistake.FastTouchdown ? 1 + 2 * _mistakeSeverity : 1;
-            vy = Math.Clamp(MathUtil.BrakingSpeed(perceived - height * 1.2, 55 * scale * hurry), 28 * scale, 160 * scale * hurry);
-            maxTilt = 0.3;
-        }
-        else if ((Math.Abs(dx) > height * 0.15 || vxNow > 22 * scale || Math.Abs(body.Angle) > 0.12) && !(_finalDescent && _mistake == PilotMistake.Wobble))
-        {
-            vx = Math.Clamp(dx * 1.5, -30 * scale, 30 * scale);
-            vy = heightAbove < height * 0.4 ? -25 * scale : 0;
-            maxTilt = 0.22;
-        }
-        else
-        {
-            // Contacto a unos 38 px/s: suave y muy por debajo del límite de un aterrizaje perfecto (70).
-            vx = Math.Clamp(dx, -12 * scale, 12 * scale);
-            vy = ContactSpeed(38, scale);
-            _finalDescent = true;
-            maxTilt = 0.08;
-            if (_mistake == PilotMistake.Wobble)
-            {
-                // Se tambalea: corrige de más de un lado a otro justo antes de tocar.
-                vx += Math.Sin(_stateTime * 7) * 95 * _mistakeSeverity * scale;
-                maxTilt += 0.55 * _mistakeSeverity;
+                surface = Math.Min(surface, platform.Y);
             }
         }
 
-        return Steer(ctx, new Vec2(vx, vy), retractLegs: false, maxTilt);
+        if (surface == double.MaxValue)
+        {
+            return _cruiseY;
+        }
+
+        // Nunca más alto que el techo de lo que tiene delante (entre monitores, el techo puede bajar).
+        var altitude = Math.Min(surface - body.HalfHeight - height * 1.2, target.Y - height * 0.6);
+        for (var i = 0; i <= 4; i++)
+        {
+            var highest = FlightEnvelope.HighestCenter(ctx.World, body, new Vec2(x + ahead * i / 4, body.Position.Y), 0.3);
+            if (!double.IsNegativeInfinity(highest))
+            {
+                altitude = Math.Max(altitude, highest);
+            }
+        }
+
+        return altitude;
     }
 
-    /// <summary>Quieto sobre el destino, mirando abajo, antes de apagar el motor.</summary>
-    private ThrustInput UpdatePoise(AutopilotContext ctx, Vec2 target)
+    // Vuelo ondulante -----------------------------------------------------------------------------------------
+
+    private static double DolphinAmplitude(double height) => height * 0.8;
+
+    /// <summary>Entre la altura de crucero y el suelo hay sitio para toda la onda (y algo más).</summary>
+    private bool HasRoomToUndulate(AutopilotContext ctx, FlightPurpose purpose, Vec2 target)
     {
         var body = ctx.Body;
-        var scale = body.Scale;
-        var height = body.Height;
-        var dx = target.X - body.Position.X;
-        if (target.Y - body.Position.Y < height * 5)
-        {
-            // El destino se ha acercado (la ventana ha subido): mejor una aproximación normal.
-            _phase = FlightPhase.Approach;
-            return UpdateApproach(ctx, target);
-        }
-
-        if (_stateTime >= _poiseDuration && Math.Abs(dx) < height * 0.3 && Math.Abs(body.Velocity.X) < 15 * scale
-            && Math.Abs(body.Velocity.Y) < 25 * scale && Math.Abs(body.Angle) < 0.05)
-        {
-            _phase = FlightPhase.Drop;
-            _stateTime = 0;
-            ctx.Signals.Add(GameEventKind.EngineCut);
-            return UpdateDrop(ctx, target);
-        }
-
-        var vx = Math.Clamp(dx * 1.6, -30 * scale, 30 * scale);
-        var vy = Math.Clamp((_cruiseY - body.Position.Y) * 2, -50 * scale, 50 * scale);
-        return Steer(ctx, new Vec2(vx, vy), retractLegs: false, maxTilt: 0.25);
+        var cruise = PlanAltitude(ctx, FlightStyle.Dolphin, purpose, target);
+        var lowest = cruise + DolphinAmplitude(body.Height) + body.HalfHeight + body.Height * 1.3;
+        return lowest < GroundBelow(ctx, body.Position) && lowest < GroundBelow(ctx, target);
     }
 
-    /// <summary>Caída libre con el motor apagado hasta el último instante en que aún puede frenar.</summary>
-    private ThrustInput UpdateDrop(AutopilotContext ctx, Vec2 target)
+    private static double DolphinWavelength(double height) => height * 8;
+
+    /// <summary>Cuánto de la onda queda: crece al empezar y se apaga al acercarse al destino.</summary>
+    private double DolphinEnvelope(AutopilotContext ctx, Vec2 target)
     {
-        var body = ctx.Body;
-        var height = body.Height;
-        var remaining = target.Y - body.Position.Y;
-        var required = RequiredDeceleration(body, remaining);
-        var available = AvailableDeceleration(body, ctx.Physics);
-        if (required >= available * IgnitionThreshold || remaining < height * 0.8 || Math.Abs(target.X - body.Position.X) > height * 1.2 || body.Fuel <= 0)
-        {
-            _phase = FlightPhase.Burn;
-            _stateTime = 0;
-            ctx.Signals.Add(GameEventKind.Ignition);
-            ctx.Visual.Flash(Expression.Focused, 2);
-            return UpdateBurn(ctx, target);
-        }
-
-        return new ThrustInput(Stabilize: true, LandOn: _destination!.OwnerId);
+        var height = ctx.Body.Height;
+        var travelled = Math.Abs(ctx.Body.Position.X - _travelStartX);
+        var remaining = Math.Abs(target.X - ctx.Body.Position.X);
+        return Math.Clamp(travelled / (height * 2), 0, 1) * Math.Clamp((remaining - height * 1.5) / (height * 3), 0, 1);
     }
 
-    /// <summary>Frenada final: el empuje justo para llegar al destino a velocidad de contacto suave.</summary>
-    private ThrustInput UpdateBurn(AutopilotContext ctx, Vec2 target)
+    private double DolphinAltitude(AutopilotContext ctx, Vec2 target)
     {
-        var body = ctx.Body;
-        var config = ctx.Physics;
-        var scale = body.Scale;
-        var height = body.Height;
-        var gravity = config.Gravity * scale;
-        var remaining = target.Y - body.Position.Y;
-        var vy = body.Velocity.Y;
-        var touchdown = SlamTouchdownSpeed * scale;
+        var height = ctx.Body.Height;
+        var phase = (ctx.Body.Position.X - _travelStartX) / DolphinWavelength(height) * Math.Tau;
+        var altitude = _cruiseY - DolphinAmplitude(height) * DolphinEnvelope(ctx, target) * Math.Sin(phase);
 
-        if (vy < touchdown * 0.6 && remaining > height * 1.3)
-        {
-            // Ha frenado demasiado arriba: termina con una aproximación normal.
-            _phase = FlightPhase.Approach;
-            return UpdateApproach(ctx, target);
-        }
-
-        double accelerationUp;
-        if (vy > touchdown)
-        {
-            accelerationUp = gravity + RequiredDeceleration(body, remaining) - config.LinearDrag * vy;
-        }
-        else
-        {
-            accelerationUp = gravity + (vy - touchdown) * 2.4 - config.LinearDrag * vy;
-        }
-
-        var dx = target.X - body.Position.X;
-        var desiredVx = Math.Clamp(dx * 1.5, -25 * scale, 25 * scale);
-        var lateral = (desiredVx - body.Velocity.X) * 2.4;
-        var desiredAngle = Math.Clamp(Math.Atan2(lateral, Math.Max(accelerationUp, gravity * 0.2)), -0.12, 0.12);
-        var maxThrust = config.MainThrust * scale * FuelPlanner.ThrustFactor(body, config) * Math.Max(0.3, Math.Cos(body.Angle));
-        return new ThrustInput(
-            Throttle: Math.Clamp(accelerationUp / maxThrust, 0, 1),
-            Rotate: FlightGuidance.RotateToward(body, config, desiredAngle),
-            LandOn: _destination!.OwnerId);
+        // Ni contra el techo ni cerca del suelo: con poco sitio, la onda se queda más plana.
+        altitude = Math.Min(altitude, GroundBelow(ctx, ctx.Body.Position) - ctx.Body.HalfHeight - height * 1.3);
+        var highest = FlightEnvelope.HighestCenter(ctx.World, ctx.Body, ctx.Body.Position, 0.3);
+        return double.IsNegativeInfinity(highest) ? altitude : Math.Max(altitude, highest);
     }
 
-    /// <summary>Deceleración necesaria para llegar a <paramref name="remaining"/> píxeles a velocidad de contacto.</summary>
-    private static double RequiredDeceleration(LanderBody body, double remaining)
+    /// <summary>Pendiente de la onda (dy/dx), para anticipar la subida o bajada con la velocidad lateral.</summary>
+    private double DolphinSlope(AutopilotContext ctx, Vec2 target)
     {
-        var vy = body.Velocity.Y;
-        var touchdown = SlamTouchdownSpeed * body.Scale;
-        if (vy <= touchdown)
-        {
-            return 0;
-        }
-
-        var distance = Math.Max(body.Height * 0.05, remaining - body.Height * 0.1);
-        return (vy * vy - touchdown * touchdown) / (2 * distance);
+        var height = ctx.Body.Height;
+        var wavelength = DolphinWavelength(height);
+        var phase = (ctx.Body.Position.X - _travelStartX) / wavelength * Math.Tau;
+        return -DolphinAmplitude(height) * DolphinEnvelope(ctx, target) * Math.Cos(phase) * Math.Tau / wavelength;
     }
-
-    /// <summary>Lo que puede frenar con el motor a tope (empuje menos gravedad).</summary>
-    private static double AvailableDeceleration(LanderBody body, PhysicsConfig config) =>
-        (config.MainThrust * FuelPlanner.ThrustFactor(body, config) * Math.Cos(body.Angle) - config.Gravity) * body.Scale;
 
     // Mandos, combustible y replanificación ----------------------------------------------------------------
 
@@ -1021,15 +638,38 @@ public sealed partial class Autopilot
     /// </summary>
     private ThrustInput Steer(AutopilotContext ctx, Vec2 velocity, bool retractLegs = false, double maxTilt = FlightGuidance.DefaultMaxTilt)
     {
-        // Solo se acepta el destino con la nave casi recta: inclinada, mejor pasar de largo y volver.
-        var landOn = State == AutopilotState.Landing && _destination is not null && (Math.Abs(ctx.Body.Angle) < 0.12 || _mistake != PilotMistake.None)
+        var body = ctx.Body;
+        var landOn = LandOn(ctx);
+        var limited = FlightEnvelope.Limit(ctx.World, body, ctx.Physics, velocity, GroundGuard(landOn));
+        var input = FlightGuidance.TrackVelocity(body, ctx.Physics, limited, retractLegs, maxTilt) with { LandOn = landOn };
+
+        // Cerca de una pared, si va demasiado deprisa hacia ella, los propulsores de traslación ayudan a frenar.
+        var excess = body.Velocity.X - limited.X;
+        if (Math.Abs(limited.X) < Math.Abs(velocity.X) - 1 && Math.Sign(excess) == Math.Sign(body.Velocity.X) && Math.Abs(excess) > 8 * body.Scale)
+        {
+            input = input with { Lateral = Math.Clamp(-excess * 2.4 / (ctx.Physics.LateralThrust * body.Scale), -1, 1) };
+        }
+
+        return input;
+    }
+
+    /// <summary>Como <see cref="Steer"/>, pero nivelado: se desplaza con los propulsores de traslación.</summary>
+    private ThrustInput SteerLevel(AutopilotContext ctx, Vec2 velocity)
+    {
+        var landOn = LandOn(ctx);
+        var limited = FlightEnvelope.Limit(ctx.World, ctx.Body, ctx.Physics, velocity, GroundGuard(landOn));
+        return FlightGuidance.TrackVelocityLevel(ctx.Body, ctx.Physics, limited) with { LandOn = landOn };
+    }
+
+    /// <summary>Solo se acepta el destino aterrizando y con la nave casi recta: inclinada, mejor pasar de largo y volver.</summary>
+    private long LandOn(AutopilotContext ctx) =>
+        State == AutopilotState.Landing && _destination is not null && (Math.Abs(ctx.Body.Angle) < 0.12 || _mistake != PilotMistake.None)
             ? _destination.OwnerId
             : ThrustInput.GroundOnly;
-        // Si se ha despistado con la altura, no hace caso al aviso de suelo (es justo su error).
-        var guardGround = !(_mistake == PilotMistake.FastTouchdown && State == AutopilotState.Landing);
-        var limited = FlightEnvelope.Limit(ctx.World, ctx.Body, ctx.Physics, velocity, guardGround ? landOn : FlightEnvelope.NoGroundGuard);
-        return FlightGuidance.TrackVelocity(ctx.Body, ctx.Physics, limited, retractLegs, maxTilt) with { LandOn = landOn };
-    }
+
+    /// <summary>Si se ha despistado con la altura, no hace caso al aviso de suelo (es justo su error).</summary>
+    private long GroundGuard(long landOn) =>
+        _mistake == PilotMistake.FastTouchdown && State == AutopilotState.Landing ? FlightEnvelope.NoGroundGuard : landOn;
 
     /// <summary>
     /// Vigila el combustible en vuelo. Si ya no llega al destino, se desvía a la base o, si tampoco llega,
@@ -1047,7 +687,7 @@ public sealed partial class Autopilot
         var config = ctx.Physics;
         var hover = FuelPlanner.HoverBurn(body, config);
         var critical = FuelPlanner.ToStop(body, config) + hover * 4;
-        if (body.Fuel < critical && _purpose != FlightPurpose.Recover)
+        if (body.Fuel < critical && (_purpose != FlightPurpose.Recover || _flightTime > 12))
         {
             EmergencyLanding(ctx);
             return true;
@@ -1101,17 +741,64 @@ public sealed partial class Autopilot
         _destination = destination;
         _purpose = purpose;
         _flightTime = 0;
-        _phase = FlightPhase.Transit;
-        _arcStarted = false;
+        ResetManeuvers();
         _flipPlanned = false;
         _tour.Clear();
-        _leaf = false;
         _style = purpose == FlightPurpose.Recover ? FlightStyle.Direct : FlightStyle.Cruise;
         if (destination is not null && destination.TryResolve(ctx.World, body, out var center, out _))
         {
-            var top = FlightEnvelope.HighestCenter(ctx.World, body, body.Position, 0.3);
-            _cruiseY = Math.Max(Math.Min(body.Position.Y, center.Y) - body.Height * 0.5, top);
+            _cruiseY = ReachableCruise(ctx, center, Math.Min(body.Position.Y, center.Y) - body.Height * 0.5);
         }
+    }
+
+    /// <summary>Vuelve a dejar todas las maniobras como al empezar un vuelo.</summary>
+    private void ResetManeuvers()
+    {
+        _phase = FlightPhase.Transit;
+        _arcStarted = false;
+        _flipDone = false;
+        _flipStage = 0;
+        _leaf = false;
+        _leafTime = 0;
+        _hopApex = false;
+        _hopPause = 0;
+        _hopChain.Clear();
+        _finalDestination = null;
+        _coastFlipping = false;
+        _diving = false;
+        _surveyTime = 0;
+    }
+
+    /// <summary>Hay sitio de sobra por encima para salir disparado con el impulso sin acercarse al techo.</summary>
+    private static bool HasRoomToBoost(AutopilotContext ctx)
+    {
+        var body = ctx.Body;
+        var highest = FlightEnvelope.HighestCenter(ctx.World, body, body.Position, 0.5);
+        if (double.IsNegativeInfinity(highest))
+        {
+            return true;
+        }
+
+        var impulse = ctx.Physics.BoostImpulse * body.Scale;
+        var rise = impulse * impulse / (2 * ctx.Physics.Gravity * body.Scale);
+        return body.Position.Y - rise - body.Height > highest;
+    }
+
+    /// <summary>Si pasa volando junto al cursor (y el usuario lo está moviendo), lo saluda balanceando la nave.</summary>
+    private void WaggleAtCursor(AutopilotContext ctx)
+    {
+        var body = ctx.Body;
+        if (_waggleCooldown > 0 || _phase != FlightPhase.Transit || ctx.Sensors.Cursor is not { } cursor
+            || ctx.Sensors.CursorVelocity.Length < 25 * body.Scale || Vec2.Distance(cursor, body.Position) > body.Height * 3)
+        {
+            return;
+        }
+
+        _waggleCooldown = 40;
+        ctx.Visual.StartWave();
+        ctx.Visual.Flash(Expression.Happy, 1.8);
+        ctx.Visual.ShowBubble(new Bubble(BubbleIcon.Hello, 1.6));
+        ctx.Signals.Add(GameEventKind.Greeted);
     }
 
     /// <summary>Y del suelo (base) bajo un punto, o muy abajo si no hay.</summary>

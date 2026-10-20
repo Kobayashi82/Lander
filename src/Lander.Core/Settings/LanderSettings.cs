@@ -60,6 +60,9 @@ public sealed class LanderSettings
     /// <summary>Torpeza del piloto automático, de 0 (nunca se equivoca) a 1 (se despista a menudo).</summary>
     public double PilotErrors { get; set; } = 0.5;
 
+    /// <summary>Ganas de acrobacias del piloto automático, de 0 (ninguna) a 1 (muchas).</summary>
+    public double Acrobatics { get; set; } = 0.5;
+
     /// <summary>Visita el reloj de la barra de tareas a las horas en punto.</summary>
     public bool VisitClock { get; set; } = true;
 
@@ -85,6 +88,7 @@ public sealed class LanderSettings
         MissionFrequency = MissionFrequency,
         ManualTimeoutSeconds = ManualTimeoutSeconds,
         PilotErrors = PilotErrors,
+        Acrobatics = Acrobatics,
         VisitClock = VisitClock,
     };
 
@@ -97,6 +101,7 @@ public sealed class LanderSettings
         Volume = Math.Clamp(double.IsFinite(Volume) ? Volume : 0.5, 0, 1);
         ManualTimeoutSeconds = Math.Clamp(ManualTimeoutSeconds, 5, 600);
         PilotErrors = Math.Clamp(double.IsFinite(PilotErrors) ? PilotErrors : 0.5, 0, 1);
+        Acrobatics = Math.Clamp(double.IsFinite(Acrobatics) ? Acrobatics : 0.5, 0, 1);
         if (!Enum.IsDefined(MissionFrequency))
         {
             MissionFrequency = MissionFrequency.Normal;

@@ -65,6 +65,24 @@ public enum FlightStyle
 
     /// <summary>Sube por encima del destino, apaga el motor, cae y frena en el último instante.</summary>
     HoverSlam,
+
+    /// <summary>Salto balístico: un empujón inclinado, la parábola con el motor apagado y una frenada final.</summary>
+    Ballistic,
+
+    /// <summary>A saltitos por la misma plataforma, posándose entre salto y salto.</summary>
+    Hopper,
+
+    /// <summary>Rasante siguiendo el relieve: sube y baja con las ventanas que va dejando debajo.</summary>
+    Contour,
+
+    /// <summary>Nivelado todo el vuelo, desplazándose con los propulsores de traslación (como al atracar).</summary>
+    Precision,
+
+    /// <summary>En picado hacia el destino y, al final, encabritado para frenar de golpe.</summary>
+    Swoop,
+
+    /// <summary>Ondulando arriba y abajo como un delfín.</summary>
+    Dolphin,
 }
 
 /// <summary>Despistes que puede tener en un vuelo (para que no parezca un robot perfecto).</summary>
@@ -124,6 +142,9 @@ public sealed class AutopilotContext
 
     /// <summary>Torpeza del piloto, de 0 a 1 (ver <see cref="GameOptions.PilotErrors"/>).</summary>
     public double PilotErrors { get; set; }
+
+    /// <summary>Ganas de acrobacias, de 0 a 1 (ver <see cref="GameOptions.Acrobatics"/>).</summary>
+    public double Acrobatics { get; set; } = 0.5;
 
     /// <summary>Señales para la capa de juego (celebraciones, sobresaltos...).</summary>
     public List<GameEventKind> Signals { get; } = [];
@@ -280,8 +301,12 @@ public sealed partial class Autopilot(IRandom random)
     {
         switch (landing.Quality)
         {
+            case LandingQuality.Perfect when _sleepAfterLanding || _finalDestination is not null:
+                // Va a dormir, o solo es un saltito de una serie: nada de celebraciones.
+                break;
+
             case LandingQuality.Perfect when (_purpose is FlightPurpose.Explore or FlightPurpose.Investigate && random.Chance(0.15))
-                || (_style == FlightStyle.HoverSlam && _purpose != FlightPurpose.Recover && random.Chance(0.5)):
+                || (_style is FlightStyle.HoverSlam or FlightStyle.Ballistic or FlightStyle.Swoop && _purpose != FlightPurpose.Recover && random.Chance(0.5)):
                 ctx.Visual.Flash(Expression.Happy, 2);
                 ctx.Visual.CelebrateTime = 1;
                 ctx.Signals.Add(GameEventKind.Celebrated);
@@ -697,7 +722,7 @@ public sealed partial class Autopilot(IRandom random)
         _restDuration = duration;
         _destination = null;
         _plannedTour.Clear();
-        _phase = FlightPhase.Transit;
+        ResetManeuvers();
         ctx.Visual.LookTarget = null;
     }
 
@@ -709,6 +734,7 @@ public sealed partial class Autopilot(IRandom random)
         _sleepBubbleTimer = 0.5;
         _napping = false;
         ctx.Visual.SetBaseExpression(Expression.Asleep);
+        ctx.Visual.ClearFlash();
     }
 
     private static bool CanExplore(AutopilotContext ctx)

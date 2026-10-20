@@ -147,12 +147,13 @@ public static class DestinationPicker
         var margin = LandingMargin(body);
         var feet = from.Y + body.HalfHeight;
         var below = world.PlatformBelow(from.X, feet - 1 + minDrop, margin);
-        if (below is not null)
+        if (below is not null && Reachable(below, from.X))
         {
             return Destination.On(below, from.X);
         }
 
-        // Nada justo debajo: la plataforma más cercana por debajo, o el suelo.
+        // Nada justo debajo (o pegado al techo, sin sitio para llegar desde arriba): la plataforma más cercana
+        // por debajo, o el suelo.
         Platform? best = null;
         var bestDistance = double.MaxValue;
         foreach (var platform in world.Platforms)
@@ -163,6 +164,11 @@ public static class DestinationPicker
             }
 
             var x = Math.Clamp(from.X, platform.Left + margin, platform.Right - margin);
+            if (!Reachable(platform, x))
+            {
+                continue;
+            }
+
             var distance = (new Vec2(x, platform.Y) - from).LengthSquared;
             if (distance < bestDistance)
             {
@@ -173,6 +179,9 @@ public static class DestinationPicker
 
         best ??= world.NearestGround(from);
         return best is null ? null : Destination.On(best, Math.Clamp(from.X, best.Left + margin, best.Right - margin));
+
+        bool Reachable(Platform platform, double x) =>
+            platform.Kind == PlatformKind.Ground || FlightEnvelope.HasHeadroom(world, body, new Vec2(x, platform.Y - body.HalfHeight - body.Height * 0.3));
     }
 
     /// <summary>Un salto lateral sobre la misma plataforma, alejándose de <paramref name="threat"/>.</summary>
